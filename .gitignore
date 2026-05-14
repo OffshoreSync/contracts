@@ -1,0 +1,32 @@
+node_modules/
+.env
+.env.local
+
+# Hardhat
+cache/
+artifacts/
+
+# Hardhat-zksync
+cache-zk/
+artifacts-zk/
+# Local-only deployment records (anvil-zksync / hardhat) — ephemeral, regenerated
+# every cold start. Real-network records under deployments/ ARE committed.
+deployments-zk/inMemoryNode/
+deployments-zk/hardhat/
+
+# Typechain
+typechain-types/
+
+# Build outputs
+dist/
+
+# Vendored binaries (downloaded via README curl commands)
+bin/zksolc
+bin/zksolc-*
+bin/anvil-zksync
+
+# Misc
+.DS_Store
+*.log
+deployments/*.json
+!deployments/.gitkeep
