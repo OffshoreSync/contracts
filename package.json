@@ -12,6 +12,9 @@
     "smoke:self-verifier:local": "hardhat run scripts/smoke-test.ts --network inMemoryNode",
     "deploy:self-verifier:sepolia": "hardhat deploy-zksync --script deploy-self-verifier.ts --network zkSyncSepolia",
     "smoke:self-verifier:sepolia": "hardhat run scripts/smoke-test.ts --network zkSyncSepolia",
+    "deploy:phase1:local": "hardhat deploy-zksync --script deploy-phase1.ts --network inMemoryNode",
+    "deploy:phase1:sepolia": "hardhat deploy-zksync --script deploy-phase1.ts --network zkSyncSepolia",
+    "test": "hardhat test --network inMemoryNode",
     "clean": "hardhat clean"
   },
   "devDependencies": {
@@ -20,7 +23,11 @@
     "@matterlabs/hardhat-zksync-ethers": "^1.4.0",
     "@matterlabs/hardhat-zksync-solc": "^1.5.0",
     "@matterlabs/hardhat-zksync-telemetry": "^1.1.1",
+    "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
+    "@types/chai": "^4",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.0",
+    "chai": "^4",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.4",
     "hardhat": "^2.22.17",
