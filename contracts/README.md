@@ -6,34 +6,45 @@ This directory holds Solidity contracts grouped by deployment vintage.
 
 We pursue **two complementary on-chain architectures** for Self.xyz-backed identity verification, separated here as `v1/` and `v2/`.
 
-### `v1/` — LayerZero hybrid (Celo verification → ZKSync Era settlement)
+### `v1/` — α-2 ZKSync-native escrow + identity binding (shipped)
 
-**Status: active development.** This is what we ship for the Phase 1 milestone and for the Self.xyz / Celo bounty.
+**Status: α-2 shipped** on local `anvil-zksync`. ZKSync Era Sepolia deploy pending.
 
-- **Verification on Celo** via Self.xyz's canonical `IdentityVerificationHubImplV2`. Inherits Self's full security model: TEE-attested registration, merkle root trust, OFAC + age + country policy.
-- **Settlement on ZKSync Era** for OffshoreSync's enterprise concerns: contract escrow, proof-of-presence, payroll, audit trail, native paymaster (sponsored gas for verified workers).
-- **Bridge** via LayerZero V2's OApp pattern. Self ships a reference implementation (`selfxyz/self-layerzero-example`); we adapt it for ZKSync Era as the destination chain.
+- **Identity binding** via `OffshoreSyncReceiver` — α-2 `Ownable` (simulates upstream delivery); α-3 LZ-OApp variant planned but **may be skipped** in favour of the v2 path (see below).
+- **Settlement** via `OffshoreSyncEscrow` — native ETH, identity-gated, full state machine (post → award → checkIn → checkOut → settle, with cancel + dispute/resolve paths). 51 hardhat tests passing.
+- **Verifier-agnostic** via `IIdentityRegistry` interface — α-2 Ownable receiver, α-3 LZ receiver, and v2 NullifierRegistry are all interchangeable from the escrow's perspective.
 
 ```
-v1/celo/      → OffshoreSyncCeloVerifier (extends SelfVerificationRoot + LZ OApp)
-v1/zksync/    → OffshoreSyncReceiver     (LZ OApp, holds nullifier ↔ account bindings)
-                OffshoreSyncEscrow       (job-contract escrow, references nullifier)
-                OffshoreSyncPaymaster    (sponsors gas for verified workers)
+v1/zksync/    → IIdentityRegistry         (shared interface, era-portable)
+                OffshoreSyncReceiver      (α-2 Ownable; simulates upstream binding)
+                OffshoreSyncEscrow        (job-contract escrow, identity-gated)
+                                          [+ paymaster deferred to α-3]
+                                          [+ LZ-OApp variant α-3, may-skip]
+v1/celo/      → OffshoreSyncCeloVerifier  (LZ-bridge source — pending deprecation
+                                          decision; v2 may obviate)
 ```
 
-### `v2/` — ZKSync-native Self deployment (preserved foundation)
+See `v1/zksync/README.md` for full details. **Deployment target: ZKSync Era L2 only.** We evaluated and rejected building a Cofferdam-operated L3 on ZKSync OS — per [zkSync-Community-Hub discussion #778](https://github.com/zkSync-Community-Hub/zksync-developers/discussions/778), L3s are outside Matter Labs' current roadmap scope. Native AA + paymasters on Era L2 cover everything we need (sponsored gas, AA UX, native USDC) without us operating our own settlement layer.
 
-**Status: contingent on Self.xyz prioritizing a ZKSync Era native deployment** of their full contract suite (`IdentityVerificationHubImplV2`, `IdentityRegistryImplV1`, all per-circuit Groth16 verifiers, TEE registration flow updates, mobile SDK chain-ID scoping). That's a 3-6 month project on Self's side; outside our control.
+**Reference-template positioning:** `OffshoreSyncEscrow` is OffshoreSync's first consumer-app contract, but it's intentionally designed as a reference pattern for any Cofferdam-integrated app. See `v1/zksync/README.md` § *Build your own consumer-app contracts* for the layering rules + PR workflow.
 
-Until then, `v2/` preserves the on-chain Groth16 verification stack we built in Phase 0 + Phase 1 (first slice). It contains:
+### `v2/` — Self-sovereign Self.xyz clone on ZKSync Era
 
-- `Verifier_vc_and_disclose.sol` — Self's own Groth16 verifier (forked, deployed to ZKSync Era Sepolia at `0xf23537eF06fC1283F5be80676418b71aEd81b7E5`). Proves BN254 precompiles work on ZKSync Era — useful as a builder-bounty contribution and as the foundation for v2 if Self ships natively.
-- `self/SelfAttesterRegistry.sol` — Two-step-ownable allow-list of trusted attester ECDSA keys. 23 unit tests passing.
-- `self/NullifierRegistry.sol` — One-shot binding from a Self nullifier to an account, with proof + attester-signature verification. 14 unit tests passing.
+**Status: on-chain side shipped (37 unit tests passing); off-chain TEE service pending.**
+
+This is **Cofferdam's own implementation of Self.xyz's architecture**, deployed natively on ZKSync Era — not a contingent fallback. The architecture mirrors Self.xyz exactly: an off-chain TEE reads passport NFC and produces proof inputs; an off-chain attester signs an envelope with a key in an allow-list; the user holds the ZK proof and submits it on-chain; an on-chain Groth16 verifier checks the proof; a nullifier registry binds account ↔ nullifier. **Trust model is identical to using Self.xyz directly** — same ZK soundness, same chain finality, same TEE-key-custody assumption — just with Cofferdam in the operator role for the TEE and attester pieces (which Self.xyz also operates centrally; there's no decentralized TEE network at play in their stack either).
+
+Strategic upside: **eliminates Celo as a verification source**, which removes the LayerZero hop from the verification path entirely. LZ is then retained only as an optional fiat on/off-ramp for countries needing MiniPay/Valora rails — not for identity.
+
+Contents:
+
+- `Verifier_vc_and_disclose.sol` — Self's own Groth16 verifier, forked, deployed to ZKSync Era Sepolia at `0xf23537eF06fC1283F5be80676418b71aEd81b7E5`.
+- `self/SelfAttesterRegistry.sol` — Two-step-ownable allow-list of trusted attester ECDSA keys. **Cofferdam-controlled** in v2; our TEE service holds a key listed here.
+- `self/NullifierRegistry.sol` — One-shot binding from a passport nullifier to an account, gated on Groth16 proof verification + attester signature. Fully wired and tested.
 - `self/ISelfGroth16Verifier.sol`, `self/SelfPublicSignals.sol` — Interfaces.
 - `self/mocks/MockSelfGroth16Verifier.sol` — Test fixture.
 
-If Self ever exposes a primitive like *"TEE attests `(merkle_root, timestamp)` pairs"*, the `SelfAttesterRegistry` becomes useful immediately as the verification entry point. If they deploy their hub natively on ZKSync, the `Verifier_vc_and_disclose` becomes the on-chain proof verifier in our `_basicVerification` chain.
+Remaining work (tracked in `TODO.md` under Phase α-3): off-chain **Cofferdam TEE service** (separate repo) — AWS Nitro Enclave initially, migration to Cloudflare Confidential Workers when GA. Signs `(account, pubSignals)` attestation envelopes with a key allow-listed in `SelfAttesterRegistry`.
 
 ## Why two architectures?
 

@@ -1,67 +1,199 @@
 # v1/zksync/ — ZKSync Era-side contracts
 
-Destination chain for the LayerZero hybrid flow. This is where OffshoreSync's enterprise concerns live: identity bindings, job-contract escrow, proof-of-presence, payroll settlement, native paymaster.
+Destination chain for OffshoreSync's enterprise concerns: identity bindings, job-contract escrow, proof-of-presence, payroll settlement. **α-2 status: shipped** (Receiver + Escrow + IIdentityRegistry interface; tests + local deploy green).
 
-## Planned contracts
+## Architectural evolution (three eras, one interface)
 
-### `OffshoreSyncReceiver.sol`
+The contracts in this directory are designed to be **verifier-agnostic**: the escrow (and any future paymaster / settlement / payroll contracts) depend only on the `IIdentityRegistry` interface, never on a concrete identity-source implementation. That lets us migrate the *source* of identity bindings without rewriting anything downstream.
 
-LayerZero V2 `OApp` receiver. Overrides `_lzReceive(Origin, bytes32, bytes, address, bytes)` to decode the cross-chain message from `OffshoreSyncCeloVerifier` and persist the `(account → nullifier)` binding.
+| Era | Identity source | Auth on `bindNullifier` | Status |
+|---|---|---|---|
+| **α-2** | `OffshoreSyncReceiver` (this dir) | `onlyOwner` — simulates upstream delivery | ✅ Shipped |
+| **α-3** | `OffshoreSyncReceiverLZ` (LayerZero V2 OApp variant) | `onlyLzEndpoint` — decoded inside `_lzReceive` | Planned |
+| **v2** | [`v2/self/NullifierRegistry`](../../v2/self/NullifierRegistry.sol) | Groth16 proof + Cofferdam TEE attester signature (cf. `SelfAttesterRegistry`) | On-chain side ✅, off-chain TEE service pending |
 
-Storage:
+All three implement `IIdentityRegistry` and emit the same `NullifierBound(account, nullifier, ...)` event topic. Swapping eras is a deploy-config change in `scripts/deploy-v1-zksync.ts`, not a contract rewrite.
 
-- `mapping(address => bytes32) accountToNullifier`
-- `mapping(bytes32 => address) nullifierToAccount` (one-shot replay guard — once a nullifier is bound to an account, it can never be rebound)
-- `mapping(address => uint256) verifiedAt` (block timestamp of the LZ message receipt — useful for `verifiedRecently()` policies)
+### Why this layering matters: the v2 architecture
 
-Public read API:
+**v2 is a self-sovereign clone of Self.xyz's full stack on ZKSync Era**, not a trust-downgraded shortcut:
+
+| Layer | Self.xyz today | Cofferdam v2 |
+|---|---|---|
+| Off-chain TEE reads passport NFC, produces ZK proof inputs | Their TEE | Our TEE (Cloudflare Worker / AWS Nitro Enclave) |
+| Off-chain attester signs `(inputs, nullifier)` with allow-listed key | Their attester | Our attester (key in `SelfAttesterRegistry`) |
+| User holds ZK proof, submits on-chain | Same | Same |
+| On-chain Groth16 verifier checks proof | Celo | **ZKSync Era** (our fork — already deployed) |
+| On-chain nullifier registry binds account ↔ nullifier | Celo (their hub) | **ZKSync Era** (`v2/self/NullifierRegistry`) |
+
+Trust-model parity with using Self.xyz directly (same ZK soundness, same chain finality, same TEE-key-custody assumption — just with us as the operator). Crucially: **eliminates Celo as a verification source**, which removes the LayerZero cross-chain hop from the verification path. LayerZero is then retained only for optional fiat on/off-ramp to Celo for countries that need MiniPay/Valora rails — not for identity.
+
+### Deployment target: ZKSync Era L2 (not an L3)
+
+Cofferdam's contracts target **ZKSync Era L2 directly**. We evaluated and rejected building a Cofferdam-operated L3 on ZKSync OS: per [zkSync-Community-Hub discussion #778](https://github.com/zkSync-Community-Hub/zksync-developers/discussions/778), L3 support is outside Matter Labs' current roadmap scope. Native AA + paymasters on Era L2 give us everything we need (sponsored gas, account-abstraction UX, native USDC) without the operational burden of running our own settlement layer.
+
+Dev stack:
+
+- **Local:** `anvil-zksync` (chain id 260) for tests and the SDK's `LocalChainProvider`.
+- **Testnet:** ZKSync Era Sepolia (chain id 300).
+- **Mainnet:** ZKSync Era (chain id 324) at Phase β.
+
+Contracts are kept **chain-portable** (vanilla Solidity, no era-specific syscalls where avoidable) and the SDK takes `{rpcUrl, chainId, contracts}` as data so any future chain swap is a config change, not a rewrite.
+
+### Reference-template positioning
+
+`OffshoreSyncEscrow` is OffshoreSync's first consumer-app contract, but it's intentionally designed as a **reference pattern** for any Cofferdam-integrated app needing identity-gated, condition-based automatic payments. See [§ Build your own consumer-app contracts](#build-your-own-consumer-app-contracts) below.
+
+## Implemented contracts (α-2)
+
+### `IIdentityRegistry.sol`
+
+Minimal cross-era identity interface. Three functions:
 
 - `isAccountBound(address) → bool`
 - `isNullifierBound(bytes32) → bool`
 - `verifiedAt(address) → uint256`
 
-Events:
+Consumed by `OffshoreSyncEscrow` and any future identity-gated contract.
 
-- `NullifierBound(address indexed account, bytes32 indexed nullifier, uint32 srcEid, uint256 timestamp)`
+### `OffshoreSyncReceiver.sol`
+
+α-2 identity registry. `Ownable` with a two-step transfer pattern (`transferOwnership` → `acceptOwnership`) to prevent fat-finger handoff to a dead key. Owner calls `bindNullifier(account, nullifier)` to simulate the future LZ-delivered or TEE-attested bind.
+
+**Storage:**
+
+- `mapping(address => bytes32) accountToNullifier`
+- `mapping(bytes32 => address) nullifierToAccount`
+- `mapping(address => uint256) verifiedAt` (private, exposed via `verifiedAt()`)
+
+**One-shot replay guard** in both directions: an account can never be re-bound to a different nullifier, and a nullifier can never be re-bound to a different account.
+
+**Event:**
+
+```solidity
+event NullifierBound(
+  address indexed account,
+  bytes32 indexed nullifier,
+  uint256 timestamp
+);
+```
+
+Topic-stable across eras; α-3 and v2 implementations emit the same event (may append unindexed fields in future eras for context — `srcEid` in α-3, `attestationId` / `scope` in v2).
 
 ### `OffshoreSyncEscrow.sol`
 
-Job-contract escrow. Recruiter locks the contract amount when posting/awarding a vacancy; worker checks in / out for proof-of-presence; on contract completion the funds auto-settle to the worker's verified address.
-
-Identity gate: every write requires `OffshoreSyncReceiver.isAccountBound(msg.sender) == true`. This is the cryptographic mooring — no Self-verified passport → no on-chain employment relationship.
-
-Surface (planned, refine in next session):
+Native-ETH job-contract escrow gated on `IIdentityRegistry.isAccountBound(msg.sender)`. State machine:
 
 ```
-function postContract(JobTerms terms) external payable        // recruiter
-function awardContract(uint256 contractId, address worker)    // recruiter
-function checkIn(uint256 contractId)                          // worker
-function checkOut(uint256 contractId)                         // worker
-function dispute(uint256 contractId, string reason)           // either party
-function settle(uint256 contractId)                           // anyone, after checkout
+Posted → Awarded → CheckedIn → CheckedOut → Settled
+   ↓        ↓          ↓            ↓
+Cancelled              Disputed → Resolved
 ```
 
-### `OffshoreSyncPaymaster.sol`
+**Public surface:**
 
-ZKSync Era native paymaster (implements `IPaymaster`). Sponsors gas for any tx whose sender is `OffshoreSyncReceiver.isAccountBound(sender) == true`. Verified workers pay zero gas — recruiters and OffshoreSync absorb the cost as a UX investment.
+```solidity
+postContract(bytes32 termsHash) external payable returns (uint256)  // recruiter
+awardContract(uint256 id, address worker)                            // recruiter
+checkIn(uint256 id)                                                  // worker
+checkOut(uint256 id)                                                 // worker
+settle(uint256 id)                                                   // anyone (keeper/relayer-friendly)
+cancel(uint256 id)                                                   // recruiter, Posted-only
+dispute(uint256 id, string reason)                                   // either party
+resolveDispute(uint256 id, address payee)                            // owner (LLC Safe)
+```
 
-**Funding model:** the paymaster contract is owned by the **OffshoreSync LLC Treasury Safe** on ZKSync Era (one canonical Safe address shared across every OffshoreSync v1 contract on this chain — see the parent `contracts/README.md` *Ownership and treasury* section). The Cofferdam Partners-platform Treasury orchestrator (see `../../../../Cofferdam/README.md` §11.4) drafts USDC top-up transactions, sourced from the Stripe → Lili → Circle Mint → LLC Safe pipeline; the Safe signs and executes per the LLC's treasury maturity ladder. The contract exposes `topUp()` and `withdraw()` restricted to the Safe via `Ownable`. Per-account rate limits prevent abuse (e.g. max 50 sponsored tx / day / account).
+**Identity-gate exemption for `settle()`** — public on purpose so workers don't need ETH for gas (keeper or paymaster pays). Other write paths require Cofferdam identity.
 
-## Build / deploy notes
+**Off-chain terms**: only the `keccak256(canonical-terms-blob)` is committed on-chain. Auditors verify off-chain that recruiter and worker agreed to the same terms by recomputing the hash.
 
-- Compiles with **zksolc** (this is ZKSync Era, not standard EVM).
-- LayerZero V2 contracts (`@layerzerolabs/oapp-evm`) must be zksolc-compatible. We'll verify in the next-session spike.
-- Deploy script: `scripts/deploy-v1-zksync.ts` (planned). Reuses the existing `scripts/deploy-phase1.ts` structure but targets the new contracts.
+**ERC-20 / USDC support deferred** to α-3 (native-ETH is sufficient for the PoC; USDC needs `SafeERC20` and a per-token allowance flow).
 
-## Dependencies (will be added next session)
+### Deferred from α-2 v1 scope
 
-- `@layerzerolabs/oapp-evm` — `OApp`, `Origin`, `MessagingFee`
-- `@openzeppelin/contracts` — `Ownable`, `ReentrancyGuard`, `SafeERC20`
+- **`OffshoreSyncPaymaster.sol`** — moved to α-3. The paymaster needs a real user-traffic shape to design rate limits and per-callsite policies; building it before the SDK exercises real flows is premature optimization. When built, it's a vanilla `IPaymaster` implementation (not a `zksync-sso` fork — we evaluated and rejected; see `TODO.md`).
+- **LayerZero V2 wiring** — moved to α-3 as `OffshoreSyncReceiverLZ` (separate contract, same storage layout). May be deprecated entirely in favour of the v2 TEE path; final decision pending v2 TEE service prototype.
 
-## Open items (next session)
+## Build / deploy
 
-1. Validate LZ V2 ZKSync Era endpoint address + zksolc compilation.
-2. Implement `OffshoreSyncReceiver` + unit tests (mock LZ endpoint).
-3. Implement `OffshoreSyncEscrow` skeleton + a happy-path unit test.
-4. Implement `OffshoreSyncPaymaster` skeleton + a sponsored-tx unit test.
-5. End-to-end smoke test: Celo Sepolia → ZKSync Era Sepolia, single nullifier binding round-trip.
+Compiles with `zksolc` 1.5.16. The `inMemoryNode` hardhat network points at a local `anvil-zksync`.
+
+```bash
+yarn compile                       # compile all contracts (v1 + v2)
+yarn node:start                    # in another terminal — leave running
+yarn test                          # 88 tests (51 α-2 + 37 v2/self)
+yarn deploy:v1-zksync:local        # deploy Receiver + Escrow to anvil-zksync
+yarn deploy:v1-zksync:sepolia      # deploy to ZKSync Era Sepolia (needs funded key)
+```
+
+The deploy script:
+
+1. Picks the local rich wallet for `inMemoryNode`, env `DEPLOYER_PRIVATE_KEY` for testnets/mainnet.
+2. Deploys `OffshoreSyncReceiver(initialOwner = deployer)`.
+3. Deploys `OffshoreSyncEscrow(identity = receiver, initialOwner = deployer)`.
+4. Writes `{receiver, escrow}` addresses to `contracts/deployments/<network>.json` — picked up by the `cofferdam-sdk` `LocalChainProvider` integration tests and consumer-app env files.
+
+**Production ownership hand-off** is a manual step *after* the deploy script, not baked in: `transferOwnership(LLC_SAFE_ADDRESS_ZKSYNC)` from each contract, then the Safe signs `acceptOwnership()`. The two-step transfer prevents handing off to a dead key.
+
+## Dependencies
+
+Intentionally **none beyond Solidity + zksolc**. The codebase convention (cf. `v2/self/SelfAttesterRegistry`) is inlined minimal primitives (`Ownable` + `ReentrancyGuard`) rather than OpenZeppelin imports — keeps audit surface small and zksolc-compile times predictable.
+
+Added only when needed:
+
+- **α-3:** `@layerzerolabs/oapp-evm` for the LZ-OApp variant (validate zksolc compatibility first).
+- **α-3:** `SafeERC20` if/when USDC support lands (inline pattern, not OZ).
+
+## Build your own consumer-app contracts
+
+`OffshoreSyncEscrow` is the **first** Cofferdam consumer-app contract — not the only one. Any app that needs identity-gated automatic payments triggered by app-specific conditions can fork this pattern. Examples:
+
+- **Freelance / gig** — checkpoint-based milestone releases (`milestoneCompleted(uint256 id, uint256 idx)` → settle).
+- **SaaS / subscription** — recurring authorized debits with cancel-anytime semantics.
+- **Rental / equipment hire** — check-in / check-out for proof-of-use, time-prorated settlement.
+- **Marketplace / escrow-as-a-service** — buyer-seller dispute resolution with Cofferdam-attested identities on both sides.
+
+What you reuse unchanged:
+
+| Layer | Where | Reuse policy |
+|---|---|---|
+| `v2/self/NullifierRegistry` | `contracts/v2/self/` | **Shared** — every Cofferdam app reads from the same registry. Same passport ↔ account binding works across all consumer apps. |
+| `v2/self/SelfAttesterRegistry` | `contracts/v2/self/` | **Shared** — Cofferdam-controlled allow-list of TEE attesters. Updates apply to all consumers atomically. |
+| `v2/self/Verifier_vc_and_disclose` | `contracts/v2/` | **Shared** — same Groth16 verifier serves all consumers. |
+| `IIdentityRegistry` | `v1/zksync/IIdentityRegistry.sol` | **Interface contract** — your escrow depends on this, not on a concrete implementation. |
+
+What you write yourself:
+
+```solidity
+// contracts/v1/<your-app>/<YourApp>Escrow.sol
+contract YourAppEscrow {
+    IIdentityRegistry public immutable identity;
+
+    modifier onlyVerified() {
+        require(identity.isAccountBound(msg.sender), "not verified");
+        _;
+    }
+
+    // Your state machine + conditions go here.
+    function startThing(...) external payable onlyVerified { ... }
+    function endThing(...) external onlyVerified { ... }
+    function settle(uint256 id) external { ... }
+}
+```
+
+### Contribution workflow
+
+Two options for getting your contracts into the Cofferdam ecosystem:
+
+1. **PR to this repo** (`contracts/contracts/v1/<your-app>/`). We review for: (a) the contract only reads from `IIdentityRegistry` (never bypasses), (b) `Ownable` transferred to a known multisig at deploy time, (c) tests against `anvil-zksync` covering the state machine + identity-gate negative paths. On merge, we maintain it alongside `v1/zksync/`.
+2. **External repo** referencing `@offshoresync/contracts` (TBD npm publish; α-3 work) for the `IIdentityRegistry` interface. You retain governance; users still get the same Cofferdam identity layer.
+
+`OffshoreSyncEscrow` is the canonical PR template: read it as "the worked example" before opening yours.
+
+## Open items
+
+1. **α-3 LZ-OApp variant.** Validate `@layerzerolabs/oapp-evm` zksolc compatibility, then implement `OffshoreSyncReceiverLZ` mirroring α-2 storage. May be skipped entirely if the v2 TEE path obviates Celo verification.
+2. **Cofferdam TEE service** (separate repo). Off-chain Nitro Enclave / Cloudflare Worker that reads passport NFC, generates Self.xyz-shaped proof inputs, signs the attestation envelope with a key listed in `v2/self/SelfAttesterRegistry`. This is the v2 unlock; the on-chain side (`v2/self/NullifierRegistry`) is already shipped.
+3. **Paymaster (α-3).** Vanilla `IPaymaster` implementation gated on `isAccountBound`. Per-account rate limits, per-callsite policies, billing event log for Cofferdam reconciliation.
+4. **ZKSync Era Sepolia deploy** of the α-2 Receiver + Escrow for an end-to-end SDK-on-testnet demo (a step beyond the current local-only PoC).
+5. **Publish `@offshoresync/contracts`** (npm) with just the `IIdentityRegistry` interface + ABIs, to support external-repo consumer-app contributions per the workflow above.
