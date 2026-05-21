@@ -82,32 +82,59 @@ Topic-stable across eras; α-3 and v2 implementations emit the same event (may a
 
 ### `OffshoreSyncEscrow.sol`
 
-Native-ETH job-contract escrow gated on `IIdentityRegistry.isAccountBound(msg.sender)`. State machine:
+Native-ETH job-contract escrow gated on `IIdentityRegistry.isAccountBound(msg.sender)`. **Two entry paths**, one shared lifecycle:
 
 ```
-Posted → Awarded → CheckedIn → CheckedOut → Settled
-   ↓        ↓          ↓            ↓
-Cancelled              Disputed → Resolved
+                         ┌── self-funded path ──┐
+                         ▼                      │
+   postContractIntent  Drafted ──fundContract──▶ Posted ──▶ Awarded ──▶ CheckedIn ──▶ CheckedOut ──▶ Settled
+         │                │                       │             │            │             │
+         │          cancelDraft                cancel           └────────────┴─────────────┴── dispute ──▶ Disputed ──▶ Resolved
+         │                │                       │
+         ▼                ▼                       ▼
+    (id created)     Cancelled                Cancelled
+                     (no funds                (refund → c.funder)
+                      ever locked)
 ```
+
+The **self-funded path** (`postContract`) is the α-2 single-tx flow for solo operators / small businesses where recruiter == funder. The **corporate path** (`postContractIntent` → `fundContract`) is the α-3 multi-party flow modelling real enterprises where HR ≠ Finance. Both paths converge at `Posted`; everything after that is identical.
 
 **Public surface:**
 
 ```solidity
-postContract(bytes32 termsHash) external payable returns (uint256)  // recruiter
-awardContract(uint256 id, address worker)                            // recruiter
-checkIn(uint256 id)                                                  // worker
-checkOut(uint256 id)                                                 // worker
-settle(uint256 id)                                                   // anyone (keeper/relayer-friendly)
-cancel(uint256 id)                                                   // recruiter, Posted-only
-dispute(uint256 id, string reason)                                   // either party
-resolveDispute(uint256 id, address payee)                            // owner (LLC Safe)
+// Entry — self-funded (α-2):
+postContract(bytes32 termsHash) external payable returns (uint256)              // recruiter+funder
+
+// Entry — corporate (α-3):
+postContractIntent(bytes32 termsHash, uint256 amount, address designatedFunder) // recruiter only
+       external returns (uint256)
+fundContract(uint256 contractId) external payable                                // designatedFunder
+cancelDraft(uint256 contractId)                                                  // recruiter, Drafted-only
+
+// Shared lifecycle:
+awardContract(uint256 id, address worker)                                        // recruiter
+checkIn(uint256 id)                                                              // worker
+checkOut(uint256 id)                                                             // worker
+settle(uint256 id)                                                               // anyone (keeper/relayer-friendly)
+cancel(uint256 id)                                                               // recruiter, Posted-only — refunds c.funder
+dispute(uint256 id, string reason)                                               // either party
+resolveDispute(uint256 id, address payee)                                        // owner (LLC Safe) — payee = funder|worker
 ```
 
-**Identity-gate exemption for `settle()`** — public on purpose so workers don't need ETH for gas (keeper or paymaster pays). Other write paths require Cofferdam identity.
+**Identity-gate exemption for `settle()`** — public on purpose so workers don't need ETH for gas (keeper or paymaster pays). All other write paths (including `fundContract`) require Cofferdam identity.
 
-**Off-chain terms**: only the `keccak256(canonical-terms-blob)` is committed on-chain. Auditors verify off-chain that recruiter and worker agreed to the same terms by recomputing the hash.
+**Refund routing.** `cancel()` and `resolveDispute(payee=funder-side)` pay `c.funder`, not `c.recruiter`. For self-funded contracts `funder == recruiter`, so α-2 behaviour is preserved without any caller changes.
 
-**ERC-20 / USDC support deferred** to α-3 (native-ETH is sufficient for the PoC; USDC needs `SafeERC20` and a per-token allowance flow).
+**Designated funder.** `postContractIntent` takes a `designatedFunder` address:
+
+- Non-zero: only that address can call `fundContract` — pinned to a specific Finance account.
+- `address(0)` ("open funding"): any Cofferdam-bound account can fund — useful when the recruiter wants to leave the door open for any of N Finance people.
+
+**Off-chain coordination.** The recruiter ↔ funder handoff ("hey Maria from Finance, can you sign the funding?") happens off-chain via the Cofferdam SDK's messaging primitive + push notifications. The chain just sees addresses. See `cofferdam-sdk/README.md` for the UX flow.
+
+**Off-chain terms.** Only the `keccak256(canonical-terms-blob)` is committed on-chain. Auditors verify off-chain that recruiter and worker agreed to the same terms by recomputing the hash.
+
+**ERC-20 / USDC support is β-blocking** (not just deferred). Production corporate treasuries hold USDC sourced via Circle Mint, not ETH; without it no company can use the corporate path in production. Native ETH is sufficient for α-2 / α-3 local + testnet PoCs.
 
 ### Deferred from α-2 v1 scope
 
@@ -121,7 +148,7 @@ Compiles with `zksolc` 1.5.16. The `inMemoryNode` hardhat network points at a lo
 ```bash
 yarn compile                       # compile all contracts (v1 + v2)
 yarn node:start                    # in another terminal — leave running
-yarn test                          # 88 tests (51 α-2 + 37 v2/self)
+yarn test                          # 109 tests (51 α-2 + 21 α-3 corporate flow + 37 v2/self)
 yarn deploy:v1-zksync:local        # deploy Receiver + Escrow to anvil-zksync
 yarn deploy:v1-zksync:sepolia      # deploy to ZKSync Era Sepolia (needs funded key)
 ```

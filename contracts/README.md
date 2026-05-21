@@ -11,7 +11,7 @@ We pursue **two complementary on-chain architectures** for Self.xyz-backed ident
 **Status: α-2 shipped** on local `anvil-zksync`. ZKSync Era Sepolia deploy pending.
 
 - **Identity binding** via `OffshoreSyncReceiver` — α-2 `Ownable` (simulates upstream delivery); α-3 LZ-OApp variant planned but **may be skipped** in favour of the v2 path (see below).
-- **Settlement** via `OffshoreSyncEscrow` — native ETH, identity-gated, full state machine (post → award → checkIn → checkOut → settle, with cancel + dispute/resolve paths). 51 hardhat tests passing.
+- **Settlement** via `OffshoreSyncEscrow` — native ETH, identity-gated, full state machine (post → award → checkIn → checkOut → settle, with cancel + dispute/resolve paths). **Two entry paths**: α-2 self-funded (`postContract`) for solo operators; α-3 corporate (`postContractIntent` + `fundContract`) for the enterprise HR ≠ Finance flow. 72 hardhat tests passing (51 α-2 + 21 α-3 corporate flow).
 - **Verifier-agnostic** via `IIdentityRegistry` interface — α-2 Ownable receiver, α-3 LZ receiver, and v2 NullifierRegistry are all interchangeable from the escrow's perspective.
 
 ```

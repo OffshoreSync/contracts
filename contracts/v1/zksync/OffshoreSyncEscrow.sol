@@ -4,15 +4,32 @@ pragma solidity 0.8.28;
 import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 
 /// @title OffshoreSyncEscrow
-/// @notice Native-ETH job-contract escrow. Recruiter posts and funds a
-///         contract; the protocol awards it to a verified worker; the worker
-///         checks in / out for proof-of-presence; on completion the funds
-///         settle to the worker.
+/// @notice Native-ETH job-contract escrow with two posting paths:
 ///
-/// @dev    α-2 scope:
-///           - Native ETH only. ERC-20 / USDC support is α-3.
+///         1. **Self-funded** (α-2; solo operators / small businesses):
+///            `postContract{value: amount}(termsHash)` — recruiter posts AND
+///            funds in a single tx.
+///
+///         2. **Multi-party / corporate** (α-3; the typical company flow
+///            where HR ≠ Finance):
+///            `postContractIntent(termsHash, amount, designatedFunder)`
+///              → contract created in `Drafted` state, no funds locked yet.
+///            `fundContract{value: amount}(contractId)`  (called by Finance)
+///              → funds locked, transitions to `Posted`.
+///
+///         Both paths converge at `Posted`; everything after that
+///         (`awardContract`, `checkIn`, `checkOut`, `settle`, `cancel`,
+///         `dispute`, `resolveDispute`) is identical between paths.
+///
+///         Refunds and recruiter-side dispute payouts go to whoever actually
+///         fronted the money (`c.funder`), not to the recruiter. For the
+///         self-funded path `funder == recruiter`, so behaviour is preserved.
+///
+/// @dev    α-2 → α-3 scope:
+///           - Native ETH only. ERC-20 / USDC support is β-blocking
+///             (production corporate treasuries hold USDC, not ETH).
 ///           - Identity-gated on both sides: every state-mutating call from
-///             a recruiter or worker requires
+///             a recruiter / funder / worker requires
 ///             `identity.isAccountBound(msg.sender) == true`. This is the
 ///             cryptographic mooring — no Cofferdam-verified identity, no
 ///             on-chain employment relationship.
@@ -25,12 +42,16 @@ import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 ///             The worker accepts an award knowing this hash; if the recruiter
 ///             tries to substitute different terms later, the hash mismatch
 ///             is verifiable off-chain by any auditor.
+///           - The recruiter ↔ funder coordination ("hey Maria, can you sign
+///             the funding?") happens off-chain via the Cofferdam messaging
+///             primitive + push notifications. The chain just sees addresses.
 ///
-///         Reentrancy: native-ETH transfers happen at exactly two state
-///         transitions (`settle` → pay worker; `cancel` / `resolveDispute` →
-///         refund recruiter / pay worker). Both use the checks-effects-
-///         interactions pattern + a single reentrancy guard. We don't pull
-///         in OZ for this — codebase convention is inlined minimal primitives.
+///         Reentrancy: native-ETH transfers happen at exactly three state
+///         transitions (`settle` → pay worker; `cancel` → refund funder;
+///         `resolveDispute` → pay funder or worker). All use the
+///         checks-effects-interactions pattern + a single reentrancy guard.
+///         We don't pull in OZ for this — codebase convention is inlined
+///         minimal primitives.
 contract OffshoreSyncEscrow {
     // ────────────────────────────────────────────────────────────────────────
     // Wiring
@@ -54,23 +75,31 @@ contract OffshoreSyncEscrow {
     // Job-contract state machine
     // ────────────────────────────────────────────────────────────────────────
 
+    /// @dev `Drafted` is appended (value 8) rather than prepended so that
+    ///      existing numeric encodings of Posted=0..Resolved=7 are stable.
+    ///      Reads less naturally as a lifecycle but preserves ABI compat
+    ///      with the α-2 shipped binary.
     enum Status {
-        Posted,     // funds locked by recruiter; no worker yet
-        Awarded,    // recruiter has assigned a worker; worker has not yet checked in
-        CheckedIn,  // worker is on-site / engaged
-        CheckedOut, // worker has finished; waiting for settlement
-        Settled,    // funds released to worker; terminal
-        Cancelled,  // recruiter cancelled before award; funds refunded; terminal
-        Disputed,   // either party raised a dispute; arbiter must resolve
-        Resolved    // arbiter has resolved a dispute; terminal
+        Posted,     // 0 — funds locked; no worker yet (entry state for self-funded path)
+        Awarded,    // 1 — recruiter has assigned a worker; worker has not yet checked in
+        CheckedIn,  // 2 — worker is on-site / engaged
+        CheckedOut, // 3 — worker has finished; waiting for settlement
+        Settled,    // 4 — funds released to worker; terminal
+        Cancelled,  // 5 — recruiter cancelled before award; funds refunded (if any); terminal
+        Disputed,   // 6 — either party raised a dispute; arbiter must resolve
+        Resolved,   // 7 — arbiter has resolved a dispute; terminal
+        Drafted     // 8 — intent posted, awaiting funding (entry state for corporate path)
     }
 
     struct JobContract {
         address recruiter;
-        address worker;      // address(0) until awarded
-        uint256 amount;      // wei locked
-        bytes32 termsHash;   // keccak256 of canonical off-chain terms blob
-        uint64 postedAt;
+        address designatedFunder; // address(0) on self-funded path OR "open funding" intent
+        address funder;           // address(0) until funded; realised payer (for refunds)
+        address worker;           // address(0) until awarded
+        uint256 amount;           // wei committed at intent / locked at funding
+        bytes32 termsHash;        // keccak256 of canonical off-chain terms blob
+        uint64 draftedAt;         // 0 if posted via the self-funded path
+        uint64 postedAt;          // set when funded (or at postContract time for self-funded)
         uint64 awardedAt;
         uint64 checkedInAt;
         uint64 checkedOutAt;
@@ -89,6 +118,33 @@ contract OffshoreSyncEscrow {
 
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /// @notice Emitted on the corporate-flow entry point. The contract is in
+    ///         `Drafted` state with no funds locked.
+    event ContractDrafted(
+        uint256 indexed contractId,
+        address indexed recruiter,
+        address indexed designatedFunder, // address(0) means "open funding"
+        uint256 amount,
+        bytes32 termsHash
+    );
+
+    /// @notice Emitted when a draft is funded by `funder`. Indexers can
+    ///         treat this as "the corporate-path equivalent of
+    ///         ContractPosted". Note that fundContract ALSO emits
+    ///         `ContractPosted` so a single listener works for both paths.
+    event ContractFunded(
+        uint256 indexed contractId,
+        address indexed funder,
+        uint256 amount
+    );
+
+    /// @notice Emitted when a recruiter cancels their own draft before any
+    ///         funder has paid. No refund involved (no funds were locked).
+    event DraftCancelled(
+        uint256 indexed contractId,
+        address indexed recruiter
+    );
 
     event ContractPosted(
         uint256 indexed contractId,
@@ -143,6 +199,8 @@ contract OffshoreSyncEscrow {
     error EthTransferFailed(address to, uint256 amount);
     error Reentrant();
     error PayeeMustBeParticipant(address payee);
+    error NotDesignatedFunder(address caller, address designatedFunder);
+    error WrongFundingAmount(uint256 expected, uint256 got);
 
     // ────────────────────────────────────────────────────────────────────────
     // Reentrancy guard (inlined; codebase convention)
@@ -234,9 +292,12 @@ contract OffshoreSyncEscrow {
         contractId = nextContractId++;
         contracts[contractId] = JobContract({
             recruiter: msg.sender,
+            designatedFunder: msg.sender, // self-funded ⇒ recruiter is also the designated funder
+            funder: msg.sender,           // and the realised funder, paid in this tx
             worker: address(0),
             amount: msg.value,
             termsHash: termsHash,
+            draftedAt: 0,                 // self-funded path skips the Drafted state
             postedAt: uint64(block.timestamp),
             awardedAt: 0,
             checkedInAt: 0,
@@ -245,6 +306,100 @@ contract OffshoreSyncEscrow {
         });
 
         emit ContractPosted(contractId, msg.sender, msg.value, termsHash);
+    }
+
+    /// @notice Corporate-flow entry point: recruiter (HR) posts a contract
+    ///         intent without locking any funds. The designated funder
+    ///         (Finance) must then call `fundContract` to actually lock
+    ///         the money and move the contract into the `Posted` state.
+    ///
+    /// @dev    UX coordination between recruiter and funder (notifications,
+    ///         chat, contact-graph discovery) happens off-chain via the
+    ///         Cofferdam SDK. The on-chain contract just sees addresses.
+    ///
+    /// @param termsHash         keccak256 of canonical off-chain terms blob.
+    /// @param amount            wei to be locked at funding time.
+    /// @param designatedFunder  address allowed to fund this intent. Pass
+    ///                          `address(0)` for "open funding" (any
+    ///                          Cofferdam-bound account can fund) — useful
+    ///                          for solo recruiters who want to leave the
+    ///                          door open.
+    /// @return contractId The id of the freshly-drafted contract.
+    function postContractIntent(
+        bytes32 termsHash,
+        uint256 amount,
+        address designatedFunder
+    )
+        external
+        onlyBoundAccount
+        returns (uint256 contractId)
+    {
+        if (amount == 0) revert ZeroAmount();
+        if (termsHash == bytes32(0)) revert ZeroTermsHash();
+        // `designatedFunder == address(0)` is intentionally allowed (open funding).
+
+        contractId = nextContractId++;
+        contracts[contractId] = JobContract({
+            recruiter: msg.sender,
+            designatedFunder: designatedFunder,
+            funder: address(0),
+            worker: address(0),
+            amount: amount,
+            termsHash: termsHash,
+            draftedAt: uint64(block.timestamp),
+            postedAt: 0,
+            awardedAt: 0,
+            checkedInAt: 0,
+            checkedOutAt: 0,
+            status: Status.Drafted
+        });
+
+        emit ContractDrafted(contractId, msg.sender, designatedFunder, amount, termsHash);
+    }
+
+    /// @notice Fund a drafted contract. Caller must be the `designatedFunder`
+    ///         (or anyone, if the draft was created with "open funding").
+    ///         Caller must be Cofferdam-verified and the value sent must
+    ///         match the committed amount exactly.
+    function fundContract(uint256 contractId)
+        external
+        payable
+        onlyBoundAccount
+    {
+        JobContract storage c = _mustExist(contractId);
+        _mustBeStatus(c, Status.Drafted);
+
+        // If the recruiter pinned a specific funder, enforce it.
+        // address(0) = open funding (anyone Cofferdam-bound can fund).
+        if (c.designatedFunder != address(0) && msg.sender != c.designatedFunder) {
+            revert NotDesignatedFunder(msg.sender, c.designatedFunder);
+        }
+        if (msg.value != c.amount) {
+            revert WrongFundingAmount(c.amount, msg.value);
+        }
+
+        c.funder = msg.sender;
+        c.postedAt = uint64(block.timestamp);
+        c.status = Status.Posted;
+
+        emit ContractFunded(contractId, msg.sender, msg.value);
+        // Also emit ContractPosted so indexers that listen on "contract is
+        // ready to award" don't need to special-case the corporate path.
+        emit ContractPosted(contractId, c.recruiter, msg.value, c.termsHash);
+    }
+
+    /// @notice Recruiter cancels their own draft before any funder has paid.
+    ///         No fund transfer happens (no funds were ever locked).
+    function cancelDraft(uint256 contractId)
+        external
+        onlyBoundAccount
+    {
+        JobContract storage c = _mustExist(contractId);
+        _mustBeStatus(c, Status.Drafted);
+        if (msg.sender != c.recruiter) revert NotRecruiter(msg.sender, c.recruiter);
+
+        c.status = Status.Cancelled;
+        emit DraftCancelled(contractId, msg.sender);
     }
 
     /// @notice Award a posted contract to a specific worker. Both recruiter
@@ -318,7 +473,9 @@ contract OffshoreSyncEscrow {
     }
 
     /// @notice Recruiter cancels a posted-but-not-yet-awarded contract.
-    ///         Refunds the locked amount.
+    ///         Refunds the locked amount to whoever actually fronted it
+    ///         (`c.funder`), which for the self-funded path is the recruiter
+    ///         themselves — preserving α-2 behaviour.
     function cancel(uint256 contractId) external nonReentrant onlyBoundAccount {
         JobContract storage c = _mustExist(contractId);
         _mustBeStatus(c, Status.Posted);
@@ -326,13 +483,14 @@ contract OffshoreSyncEscrow {
 
         uint256 refund = c.amount;
         address recruiter = c.recruiter;
+        address refundTo = c.funder; // self-funded: == recruiter; corporate: Finance
 
         c.amount = 0;
         c.status = Status.Cancelled;
 
         emit ContractCancelled(contractId, recruiter, refund);
 
-        _sendEth(recruiter, refund);
+        _sendEth(refundTo, refund);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -373,6 +531,10 @@ contract OffshoreSyncEscrow {
     ///         by an on-chain arbitration mechanism (jurors / committee /
     ///         Kleros-style) in a later era without changing the rest of
     ///         the escrow.
+    /// @dev `payee` must be the worker (worker-side wins) or the funder
+    ///      (recruiter-side wins — refund goes to whoever paid, not to HR).
+    ///      For self-funded contracts `funder == recruiter`, so passing the
+    ///      recruiter address still works and α-2 tests are preserved.
     function resolveDispute(uint256 contractId, address payee)
         external
         nonReentrant
@@ -380,7 +542,7 @@ contract OffshoreSyncEscrow {
     {
         JobContract storage c = _mustExist(contractId);
         _mustBeStatus(c, Status.Disputed);
-        if (payee != c.recruiter && payee != c.worker) {
+        if (payee != c.funder && payee != c.worker) {
             revert PayeeMustBeParticipant(payee);
         }
 

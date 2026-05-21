@@ -16,6 +16,9 @@
 //   - Dispute path: any participant raises, owner resolves to either party,
 //     funds flow correctly.
 //   - settle() is callable by anyone (relayer / keeper / paymaster pattern).
+//   - α-3 corporate flow: postContractIntent → fundContract → existing
+//     pipeline. Designated-funder enforcement, open-funding mode,
+//     cancelDraft, refund-to-funder semantics on cancel + dispute.
 
 import { expect } from 'chai';
 import * as hre from 'hardhat';
@@ -29,16 +32,18 @@ import { richWallets } from './helpers/wallets';
 describe('OffshoreSyncEscrow', () => {
   let deployerWallet: Wallet;
   let owner: Wallet;       // = arbiter for disputes
-  let recruiter: Wallet;
+  let recruiter: Wallet;   // HR
   let worker: Wallet;
   let outsider: Wallet;
   let keeper: Wallet;      // unrelated party who can call settle()
+  let funder: Wallet;      // Finance role (corporate-flow tests)
   let receiver: Contract;
   let escrow: Contract;
 
   const recruiterNullifier = ethers.keccak256(ethers.toUtf8Bytes('nullifier-recruiter'));
   const workerNullifier = ethers.keccak256(ethers.toUtf8Bytes('nullifier-worker'));
   const outsiderNullifier = ethers.keccak256(ethers.toUtf8Bytes('nullifier-outsider'));
+  const funderNullifier = ethers.keccak256(ethers.toUtf8Bytes('nullifier-funder'));
 
   const termsHash = ethers.keccak256(ethers.toUtf8Bytes('canonical-job-terms-blob-v1'));
   const amount = ethers.parseEther('1');
@@ -51,6 +56,7 @@ describe('OffshoreSyncEscrow', () => {
     worker = wallets[3];
     outsider = wallets[4];
     keeper = wallets[5];
+    funder = wallets[6];
 
     const deployer = new Deployer(hre, deployerWallet);
 
@@ -453,6 +459,372 @@ describe('OffshoreSyncEscrow', () => {
       await (escrow.connect(worker) as Contract).dispute(1n, 'reason');
       await expect((escrow.connect(recruiter) as Contract).dispute(1n, 'reason'))
         .to.be.revertedWithCustomError(escrow, 'WrongStatus');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Corporate flow: postContractIntent → fundContract (α-3)
+  //
+  // The real-world enterprise procedure: recruiter (HR) doesn't hold funds,
+  // a designated `funder` (Finance) does. Recruiter posts intent without
+  // value; Finance is notified off-chain (Cofferdam messaging) and funds
+  // the contract in a separate tx. Both paths converge at `Posted` and the
+  // rest of the lifecycle (award/checkIn/checkOut/settle/dispute) is
+  // identical.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('postContractIntent', () => {
+    beforeEach(async () => {
+      // Funder needs Cofferdam identity to fund.
+      await (receiver.connect(owner) as Contract).bindNullifier(
+        funder.address,
+        funderNullifier,
+      );
+    });
+
+    it('creates a draft with no funds locked, emits ContractDrafted', async () => {
+      const escrowBalBefore = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+
+      await expect(
+        (escrow.connect(recruiter) as Contract).postContractIntent(
+          termsHash,
+          amount,
+          funder.address,
+        ),
+      )
+        .to.emit(escrow, 'ContractDrafted')
+        .withArgs(1n, recruiter.address, funder.address, amount, termsHash);
+
+      // Crucial property: no value transferred at intent time.
+      const escrowBalAfter = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+      expect(escrowBalAfter).to.equal(escrowBalBefore);
+
+      const c = await escrow.getContract(1n);
+      expect(c.recruiter).to.equal(recruiter.address);
+      expect(c.designatedFunder).to.equal(funder.address);
+      expect(c.funder).to.equal(ethers.ZeroAddress);
+      expect(c.worker).to.equal(ethers.ZeroAddress);
+      expect(c.amount).to.equal(amount);
+      expect(c.termsHash).to.equal(termsHash);
+      expect(c.status).to.equal(8n); // Drafted
+    });
+
+    it('allows address(0) as designatedFunder (open funding)', async () => {
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        ethers.ZeroAddress,
+      );
+      const c = await escrow.getContract(1n);
+      expect(c.designatedFunder).to.equal(ethers.ZeroAddress);
+      expect(c.status).to.equal(8n); // Drafted
+    });
+
+    it('reverts AccountNotBound for an unverified recruiter', async () => {
+      await expect(
+        (escrow.connect(outsider) as Contract).postContractIntent(
+          termsHash,
+          amount,
+          funder.address,
+        ),
+      )
+        .to.be.revertedWithCustomError(escrow, 'AccountNotBound')
+        .withArgs(outsider.address);
+    });
+
+    it('reverts ZeroAmount on amount == 0', async () => {
+      await expect(
+        (escrow.connect(recruiter) as Contract).postContractIntent(
+          termsHash,
+          0n,
+          funder.address,
+        ),
+      ).to.be.revertedWithCustomError(escrow, 'ZeroAmount');
+    });
+
+    it('reverts ZeroTermsHash on bytes32(0)', async () => {
+      await expect(
+        (escrow.connect(recruiter) as Contract).postContractIntent(
+          ethers.ZeroHash,
+          amount,
+          funder.address,
+        ),
+      ).to.be.revertedWithCustomError(escrow, 'ZeroTermsHash');
+    });
+
+    it('shares the contract id space with postContract', async () => {
+      // postContract uses id=1
+      await (escrow.connect(recruiter) as Contract).postContract(termsHash, { value: amount });
+      // postContractIntent uses id=2
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        funder.address,
+      );
+      expect(await escrow.nextContractId()).to.equal(3n);
+    });
+  });
+
+  describe('fundContract', () => {
+    beforeEach(async () => {
+      await (receiver.connect(owner) as Contract).bindNullifier(
+        funder.address,
+        funderNullifier,
+      );
+      // Recruiter creates a draft with funder explicitly designated.
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        funder.address,
+      );
+    });
+
+    it('locks funds, transitions Drafted → Posted, emits ContractFunded + ContractPosted', async () => {
+      const escrowBalBefore = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+
+      const tx = await (escrow.connect(funder) as Contract).fundContract(1n, {
+        value: amount,
+      });
+      await expect(tx)
+        .to.emit(escrow, 'ContractFunded')
+        .withArgs(1n, funder.address, amount);
+      await expect(tx)
+        .to.emit(escrow, 'ContractPosted')
+        .withArgs(1n, recruiter.address, amount, termsHash);
+
+      const escrowBalAfter = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+      expect(escrowBalAfter - escrowBalBefore).to.equal(amount);
+
+      const c = await escrow.getContract(1n);
+      expect(c.funder).to.equal(funder.address);
+      expect(c.status).to.equal(0n); // Posted
+    });
+
+    it('reverts NotDesignatedFunder if a different account tries to fund', async () => {
+      // outsider is unbound; bind them so the identity gate doesn't shadow
+      // the designated-funder check.
+      await (receiver.connect(owner) as Contract).bindNullifier(
+        outsider.address,
+        outsiderNullifier,
+      );
+      await expect(
+        (escrow.connect(outsider) as Contract).fundContract(1n, { value: amount }),
+      )
+        .to.be.revertedWithCustomError(escrow, 'NotDesignatedFunder')
+        .withArgs(outsider.address, funder.address);
+    });
+
+    it('reverts WrongFundingAmount on under-funding', async () => {
+      await expect(
+        (escrow.connect(funder) as Contract).fundContract(1n, { value: amount - 1n }),
+      )
+        .to.be.revertedWithCustomError(escrow, 'WrongFundingAmount')
+        .withArgs(amount, amount - 1n);
+    });
+
+    it('reverts WrongFundingAmount on over-funding', async () => {
+      await expect(
+        (escrow.connect(funder) as Contract).fundContract(1n, { value: amount + 1n }),
+      )
+        .to.be.revertedWithCustomError(escrow, 'WrongFundingAmount')
+        .withArgs(amount, amount + 1n);
+    });
+
+    it('reverts AccountNotBound if the funder is unverified', async () => {
+      // Re-bind funder away (one-shot replay-guard means we use a fresh
+      // wallet instead). The simplest setup: create another draft where
+      // the designated funder is `outsider`, who has no Cofferdam identity.
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        outsider.address,
+      );
+      await expect(
+        (escrow.connect(outsider) as Contract).fundContract(2n, { value: amount }),
+      )
+        .to.be.revertedWithCustomError(escrow, 'AccountNotBound')
+        .withArgs(outsider.address);
+    });
+
+    it('cannot fund the same draft twice', async () => {
+      await (escrow.connect(funder) as Contract).fundContract(1n, { value: amount });
+      await expect(
+        (escrow.connect(funder) as Contract).fundContract(1n, { value: amount }),
+      ).to.be.revertedWithCustomError(escrow, 'WrongStatus');
+    });
+
+    it('cannot fund a self-funded contract (it is not Drafted)', async () => {
+      await (escrow.connect(recruiter) as Contract).postContract(termsHash, { value: amount });
+      // Self-funded contract id = 2 here (the beforeEach created id=1 as a draft).
+      await expect(
+        (escrow.connect(funder) as Contract).fundContract(2n, { value: amount }),
+      ).to.be.revertedWithCustomError(escrow, 'WrongStatus');
+    });
+
+    it('open-funding mode: any Cofferdam-bound account can fund', async () => {
+      // Create a separate draft with no designated funder.
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        ethers.ZeroAddress,
+      );
+      // Bind worker (anyone bound, doesn't have to be tagged as Finance).
+      await expect(
+        (escrow.connect(worker) as Contract).fundContract(2n, { value: amount }),
+      )
+        .to.emit(escrow, 'ContractFunded')
+        .withArgs(2n, worker.address, amount);
+      const c = await escrow.getContract(2n);
+      expect(c.funder).to.equal(worker.address);
+      expect(c.status).to.equal(0n); // Posted
+    });
+
+    it('full corporate happy path: draft → fund → award → checkIn → checkOut → settle', async () => {
+      // Already drafted in beforeEach. Fund:
+      await (escrow.connect(funder) as Contract).fundContract(1n, { value: amount });
+      // Existing pipeline takes over unchanged:
+      await (escrow.connect(recruiter) as Contract).awardContract(1n, worker.address);
+      await (escrow.connect(worker) as Contract).checkIn(1n);
+      await (escrow.connect(worker) as Contract).checkOut(1n);
+
+      const workerBalBefore = await deployerWallet.provider.getBalance(worker.address);
+      await (escrow.connect(keeper) as Contract).settle(1n);
+      const workerBalAfter = await deployerWallet.provider.getBalance(worker.address);
+
+      expect(workerBalAfter - workerBalBefore).to.equal(amount);
+      const c = await escrow.getContract(1n);
+      expect(c.status).to.equal(4n); // Settled
+    });
+  });
+
+  describe('cancelDraft', () => {
+    beforeEach(async () => {
+      await (receiver.connect(owner) as Contract).bindNullifier(
+        funder.address,
+        funderNullifier,
+      );
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        funder.address,
+      );
+    });
+
+    it('moves Drafted → Cancelled, no fund transfer, emits DraftCancelled', async () => {
+      const escrowBalBefore = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+      await expect((escrow.connect(recruiter) as Contract).cancelDraft(1n))
+        .to.emit(escrow, 'DraftCancelled')
+        .withArgs(1n, recruiter.address);
+      const escrowBalAfter = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+      expect(escrowBalAfter).to.equal(escrowBalBefore);
+
+      const c = await escrow.getContract(1n);
+      expect(c.status).to.equal(5n); // Cancelled
+    });
+
+    it('only the recruiter can cancelDraft', async () => {
+      await expect((escrow.connect(funder) as Contract).cancelDraft(1n))
+        .to.be.revertedWithCustomError(escrow, 'NotRecruiter');
+    });
+
+    it('cannot cancelDraft a Posted contract', async () => {
+      // Fund first to move past Drafted.
+      await (escrow.connect(funder) as Contract).fundContract(1n, { value: amount });
+      await expect((escrow.connect(recruiter) as Contract).cancelDraft(1n))
+        .to.be.revertedWithCustomError(escrow, 'WrongStatus');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Refund routing: cancel + resolveDispute must pay the funder, not the
+  // recruiter, when they differ (the corporate flow). For self-funded the
+  // refund still lands on the recruiter (funder == recruiter), and the
+  // existing α-2 tests cover that case above.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('refund routing (corporate flow)', () => {
+    beforeEach(async () => {
+      await (receiver.connect(owner) as Contract).bindNullifier(
+        funder.address,
+        funderNullifier,
+      );
+      await (escrow.connect(recruiter) as Contract).postContractIntent(
+        termsHash,
+        amount,
+        funder.address,
+      );
+      await (escrow.connect(funder) as Contract).fundContract(1n, { value: amount });
+    });
+
+    it('cancel refunds the funder, not the recruiter', async () => {
+      const recruiterBalBefore = await deployerWallet.provider.getBalance(recruiter.address);
+      const funderBalBefore = await deployerWallet.provider.getBalance(funder.address);
+      const escrowBalBefore = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+
+      await (escrow.connect(recruiter) as Contract).cancel(1n);
+
+      const recruiterBalAfter = await deployerWallet.provider.getBalance(recruiter.address);
+      const funderBalAfter = await deployerWallet.provider.getBalance(funder.address);
+      const escrowBalAfter = await deployerWallet.provider.getBalance(
+        await escrow.getAddress(),
+      );
+
+      // Escrow drained by exactly `amount`.
+      expect(escrowBalBefore - escrowBalAfter).to.equal(amount);
+      // Funder got the refund (gross > 0 confirms ETH flowed to them).
+      expect(funderBalAfter - funderBalBefore).to.equal(amount);
+      // Recruiter's balance only decreased by gas (cancel costs them gas
+      // but doesn't refund them anything).
+      expect(recruiterBalAfter < recruiterBalBefore).to.equal(true);
+    });
+
+    it('resolveDispute(recruiter-side) pays the funder, not the recruiter', async () => {
+      // Move to Disputed.
+      await (escrow.connect(recruiter) as Contract).awardContract(1n, worker.address);
+      await (escrow.connect(worker) as Contract).checkIn(1n);
+      await (escrow.connect(worker) as Contract).dispute(1n, 'reason');
+
+      // Recruiter address is NOT a valid payee any more — funder is.
+      await expect(
+        (escrow.connect(owner) as Contract).resolveDispute(1n, recruiter.address),
+      )
+        .to.be.revertedWithCustomError(escrow, 'PayeeMustBeParticipant')
+        .withArgs(recruiter.address);
+
+      // Funder is the valid payee for the recruiter-side resolution.
+      const funderBalBefore = await deployerWallet.provider.getBalance(funder.address);
+      await expect(
+        (escrow.connect(owner) as Contract).resolveDispute(1n, funder.address),
+      )
+        .to.emit(escrow, 'DisputeResolved')
+        .withArgs(1n, owner.address, funder.address, amount);
+      const funderBalAfter = await deployerWallet.provider.getBalance(funder.address);
+      expect(funderBalAfter - funderBalBefore).to.equal(amount);
+    });
+
+    it('resolveDispute(worker-side) still pays the worker', async () => {
+      await (escrow.connect(recruiter) as Contract).awardContract(1n, worker.address);
+      await (escrow.connect(worker) as Contract).checkIn(1n);
+      await (escrow.connect(worker) as Contract).dispute(1n, 'reason');
+
+      const workerBalBefore = await deployerWallet.provider.getBalance(worker.address);
+      await (escrow.connect(owner) as Contract).resolveDispute(1n, worker.address);
+      const workerBalAfter = await deployerWallet.provider.getBalance(worker.address);
+      expect(workerBalAfter - workerBalBefore).to.equal(amount);
     });
   });
 });
