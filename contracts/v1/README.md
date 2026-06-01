@@ -1,6 +1,8 @@
 # v1/ — LayerZero hybrid (Celo verification → ZKSync Era settlement)
 
-**Status: active development.** Target for Phase 1 milestone and the Self.xyz / Celo bounty.
+> **Rev-6 status (2026-05-30) — superseded by v2.** This directory hosts the **legacy α-2 / α-3 LayerZero ingress**: Self.xyz verification on Celo → LayerZero V2 → `OffshoreSyncReceiver._lzReceive` on ZKSync Era. The contracts remain deployed for verifiability + audit-trail continuity. **Production identity binding is now single-chain on ZKSync Era via [`v2/self/NullifierRegistry`](../v2/self/NullifierRegistry.sol)**, attested by a Cloudflare Container Self prover (`cofferdam-prover`) + Cloudflare Worker (`cofferdam-attester`). The downstream `OffshoreSyncEscrow`, `OffshoreSyncWitnessRegistry`, and recurring-escrow contracts are unchanged — they consume `IIdentityRegistry`, which both v1 and v2 implement identically. See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` §3 + `cofferdam-app/ARCHITECTURE.md` §3.
+
+**Status: legacy.** Originally targeted Phase 1 (Self.xyz / Celo bounty era); superseded by the rev-6 Cloudflare-native stack pivot.
 
 ## Architecture
 

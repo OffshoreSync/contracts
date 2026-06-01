@@ -1,5 +1,7 @@
 # v1/zksync/ — ZKSync Era-side contracts
 
+> **Rev-6 status (2026-05-30) — production ingress moved to v2.** The Receiver in this directory remains deployed and continues to work (it implements `IIdentityRegistry` like everything else), but **production identity binding now goes through `../../v2/self/NullifierRegistry`** with a Cloudflare Container Self prover. The α-3 LayerZero OApp variant (`OffshoreSyncReceiverLZ`) is **deferred indefinitely** — the v2 path obsoletes it for production. The escrow + recurring-escrow + witness-registry contracts in this dir are unaffected (they consume `IIdentityRegistry`, which both v1 and v2 implement identically). See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` for the production flow.
+
 Destination chain for OffshoreSync's enterprise concerns: identity bindings, job-contract escrow, proof-of-presence, payroll settlement. **α-2 status: shipped** (Receiver + Escrow + IIdentityRegistry interface; tests + local deploy green).
 
 ## Architectural evolution (three eras, one interface)
@@ -8,9 +10,9 @@ The contracts in this directory are designed to be **verifier-agnostic**: the es
 
 | Era | Identity source | Auth on `bindNullifier` | Status |
 |---|---|---|---|
-| **α-2** | `OffshoreSyncReceiver` (this dir) | `onlyOwner` — simulates upstream delivery | ✅ Shipped |
-| **α-3** | `OffshoreSyncReceiverLZ` (LayerZero V2 OApp variant) | `onlyLzEndpoint` — decoded inside `_lzReceive` | Planned |
-| **v2** | [`v2/self/NullifierRegistry`](../../v2/self/NullifierRegistry.sol) | Groth16 proof + Cofferdam TEE attester signature (cf. `SelfAttesterRegistry`) | On-chain side ✅, off-chain TEE service pending |
+| **α-2** | `OffshoreSyncReceiver` (this dir) | `onlyOwner` — simulates upstream delivery | ✅ Shipped (now used only for local-dev / Sepolia smoke testing post rev-6) |
+| **α-3** | `OffshoreSyncReceiverLZ` (LayerZero V2 OApp variant) | `onlyLzEndpoint` — decoded inside `_lzReceive` | ❌ **Deferred indefinitely (rev-6)** — superseded by the v2 path; no longer planned for production |
+| **v2 (production)** | [`v2/self/NullifierRegistry`](../../v2/self/NullifierRegistry.sol) | Groth16 proof + Cofferdam attester signature (cf. `SelfAttesterRegistry`) | ✅ On-chain side audited + ready; off-chain `cofferdam-prover` Cloudflare Container + `cofferdam-attester` Worker scheduled under T1.3 per `TODO.md` |
 
 All three implement `IIdentityRegistry` and emit the same `NullifierBound(account, nullifier, ...)` event topic. Swapping eras is a deploy-config change in `scripts/deploy-v1-zksync.ts`, not a contract rewrite.
 
@@ -140,6 +142,7 @@ resolveDispute(uint256 id, address payee)                                       
 
 - **`OffshoreSyncPaymaster.sol`** — moved to α-3. The paymaster needs a real user-traffic shape to design rate limits and per-callsite policies; building it before the SDK exercises real flows is premature optimization. When built, it's a vanilla `IPaymaster` implementation (not a `zksync-sso` fork — we evaluated and rejected; see `TODO.md`).
 - **LayerZero V2 wiring** — moved to α-3 as `OffshoreSyncReceiverLZ` (separate contract, same storage layout). May be deprecated entirely in favour of the v2 TEE path; final decision pending v2 TEE service prototype.
+- **`OffshoreSyncRecurringEscrow.sol`** — β-scope sibling of `OffshoreSyncEscrow` covering archetypes the current escrow doesn't fit: rotation+monthly, rotation+per-rotation, fixed-term/permanent salaried, day-rate spot. The current escrow models **~20–25% of the OffshoreSync Jobs API vacancy taxonomy** (single-settlement fixed-task only); the recurring escrow lifts coverage to ~100%. Full spec, real-maritime payment-pattern analysis, contract sketch, SDK routing plan, and open questions in [`RECURRING_ESCROW_DESIGN.md`](./RECURRING_ESCROW_DESIGN.md). Implementation pending β audit cycle.
 
 ## Build / deploy
 

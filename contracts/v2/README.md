@@ -1,6 +1,8 @@
-# v2/ — ZKSync-native Self deployment (preserved foundation)
+# v2/ — ZKSync-native Self deployment (production identity rail, rev-6)
 
-**Status: parked, contingent on Self.xyz deploying their full contract suite on ZKSync Era natively.**
+> **Rev-6 status (2026-05-30) — promoted from parked to production.** This is now the **production identity ingress** for Cofferdam. We don't wait for Self.xyz to ship their full contract suite natively on ZKSync Era — we run **our own** Cloudflare Container Self prover (`cofferdam-prover`) feeding into the contracts in this directory, with a Cloudflare Worker (`cofferdam-attester`) holding the `SelfAttesterRegistry`-registered signing key. The Groth16 verifier (`Verifier_vc_and_disclose`) runs on-chain on ZKSync Era; the attester signature provides the trust anchor that the open-source prover libraries were actually invoked. See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` §3 + §8 for the full flow + trust model.
+
+**Status: production-bound.** Already-audited contracts; deployed on ZKSync Era Sepolia under T1.3 per `TODO.md`, mainnet follows after smoke test.
 
 ## What's in here
 

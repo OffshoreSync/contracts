@@ -1,6 +1,8 @@
 # v1/celo/ — Celo-side contracts
 
-Source chain for the LayerZero hybrid flow.
+> **Rev-6 status (2026-05-30) — deprecated, not refilled.** Production identity binding moved to **`v2/self/NullifierRegistry` on ZKSync Era** with a Cloudflare Container Self prover. The contracts in this directory remain deployed (and the Celo paymaster contract is retained for verifiability) but are **not part of the production traffic rotation** — the Celo paymaster is not refilled, and new attesters are not registered here. See `cofferdam-app/ARCHITECTURE.md` §10.2 + `ENTERPRISE_MODULE_PLAN.md` §13.3 + `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` §3 for the current ingress.
+
+Source chain for the legacy LayerZero hybrid flow (α-2 / α-3 era).
 
 ## Planned contracts
 

@@ -2,11 +2,13 @@
 
 This directory holds Solidity contracts grouped by deployment vintage.
 
+> **Rev-6 status (2026-05-30) — v1 vs v2 is now legacy vs production.** Until rev-6, this directory described "two complementary on-chain architectures" with v1 active and v2 parked. The rev-6 Cloudflare-native stack pivot **promoted v2 to production** and **demoted v1's LayerZero ingress to legacy** (contracts remain deployed, no new production traffic). The escrow contracts inside `v1/zksync/` (`OffshoreSyncEscrow`, the planned `OffshoreSyncRecurringEscrow`, `OffshoreSyncWitnessRegistry`) are **not** legacy — they consume the `IIdentityRegistry` interface and continue to work unchanged with either ingress. What changed is the *identity-binding source*, not the *settlement layer*. See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` for the v2 production flow.
+
 ## Versioning model
 
 We pursue **two complementary on-chain architectures** for Self.xyz-backed identity verification, separated here as `v1/` and `v2/`.
 
-### `v1/` — α-2 ZKSync-native escrow + identity binding (shipped)
+### `v1/` — α-2 ZKSync-native escrow + identity binding (shipped; identity ingress now legacy per rev-6)
 
 **Status: α-2 shipped** on local `anvil-zksync`. ZKSync Era Sepolia deploy pending.
 
@@ -70,9 +72,9 @@ Every OffshoreSync contract deployed under `v1/` (and, if ever activated, the co
 | `OffshoreSyncPaymaster` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
 | `OffshoreSyncAccountValidator` *(if added in v1)* | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
 
-The Safe's signer composition scales with org maturity — a phased treasury maturity ladder governs threshold and authorized signers from founder-hot-wallet today through institutional custody at maturity. The contract-owner *address* never changes from deployment onward; only the off-chain signer set behind that address evolves. Public outline of the ladder lives in `../../Cofferdam/README.md` §11.2; private operational specifics (hardware picks, signer identities, caps, storage locations, recovery procedures) live in OffshoreSync LLC's internal treasury runbook at `../../financial/TREASURY.md` (outside any git repo).
+The Safe's signer composition scales with org maturity — a phased treasury maturity ladder governs threshold and authorized signers from founder-hot-wallet today through institutional custody at maturity. The contract-owner *address* never changes from deployment onward; only the off-chain signer set behind that address evolves. Public outline of the ladder lives in `../../cofferdam-app/ARCHITECTURE.md` §11.2; private operational specifics (hardware picks, signer identities, caps, storage locations, recovery procedures) live in OffshoreSync LLC's internal treasury runbook at `../../financial/TREASURY.md` (outside any git repo).
 
-Paymaster pools funded by this Safe receive their balance via the **Cofferdam Partners-platform Treasury orchestrator** (`../../Cofferdam/README.md` §11.4), which converts Stripe revenue → Lili Finance bank deposit → Circle Mint USDC mint → LLC Safe → paymaster pool top-up in a four-step accountant-visible audit trail. No bridging vendor sits in this path: Circle Mint mints native USDC directly on both Celo (`0xcebA9300f2b948710d2653dD7B07f33A8B32118C`) and ZKSync Era (`0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4`).
+Paymaster pools funded by this Safe receive their balance via the **Cofferdam Partners-platform Treasury orchestrator** (`../../cofferdam-app/ARCHITECTURE.md` §11.4), which converts Stripe revenue → Lili Finance bank deposit → Circle Mint USDC mint → LLC Safe → paymaster pool top-up in a four-step accountant-visible audit trail. No bridging vendor sits in this path: Circle Mint mints native USDC directly on both Celo (`0xcebA9300f2b948710d2653dD7B07f33A8B32118C`) and ZKSync Era (`0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4`).
 
 This pattern decouples on-chain ownership identity (stable, immutable from the contracts' perspective) from off-chain key management (evolving with org maturity), and decouples both from the fiat revenue pipeline (regulated, accountant-visible).
 

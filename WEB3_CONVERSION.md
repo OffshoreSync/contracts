@@ -1,5 +1,14 @@
 # OffshoreSync — Web3 Conversion Plan
 
+> **Rev-6 status (2026-05-30) — superseded by the Cloudflare-native stack pivot.** The architecture below describes the α-2/α-3 LayerZero-on-Celo ingress, which **remains deployed on-chain** for verifiability but is **no longer the production path**. Production identity binding lands directly on **ZKSync Era via `v2/self/NullifierRegistry`**, attested by a **Cloudflare Container Self prover** (`cofferdam-prover`) + Cloudflare Worker (`cofferdam-attester`). The single-vendor Cloudflare stack + on-ZKSync Groth16 verification eliminates LayerZero from the critical path and defers AWS Nitro Enclave to Phase γ. Current source-of-truth docs:
+>
+> - `@/Users/hoff/OffshoreSync/cofferdam-app/ARCHITECTURE.md` §3 + §10.1 — engineering spec + cost basis.
+> - `@/Users/hoff/OffshoreSync/cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` — full T1.1 design (Container image, attester key rotation, multi-device reconciliation, Phase γ upgrade path).
+> - `@/Users/hoff/OffshoreSync/financial/REVENUE_MODEL.md` §8 + §10.1 — tier pricing + refreshed cost basis (~$0.11/MAU median).
+> - `@/Users/hoff/OffshoreSync/ENTERPRISE_MODULE_PLAN.md` §13.3 — Cloudflare Container Self prover workstream replacing the prior Nitro plan.
+>
+> The body below is retained as **historical record** for the LayerZero-hybrid era. Do not implement against it for new work.
+
 > ZKSync Era account abstraction (passkey login + paymaster) for the enterprise/B2B layer (jobs, escrow, payroll, audit trail). Self.xyz NFC-passport ZK identity proofs verified on Celo (Self's canonical chain) and **mirrored to ZKSync Era via LayerZero V2**. Celo doubles as the consumer/retail layer for USDC on/off-ramp and cross-border remittances. Companion app (Cofferdam) holds the Web3 surface; main OffshoreSync app stays open + non-Web3.
 
 This document is the consolidated, authoritative spec for the Web3 conversion. It supersedes the two staging plans under `~/.windsurf/plans/`. Read it top-to-bottom before opening a PR against any of the layers below.
@@ -40,7 +49,7 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
 | Self.xyz integration | **Consume Self's deployed contracts on Celo via `SelfVerificationRoot` abstract base** (their canonical integration pattern, used in `selfxyz/self-layerzero-example`). Mobile UX wraps `@selfxyz/mobile-sdk-alpha`. |
 | Legacy auth | **Coexist for a transition window** (Google / Apple / local password kept for ~2 releases). |
 | Passkey cap | **3 per account, enforced on-chain** by `OffshoreSyncAccountValidator` on ZKSync Era. |
-| Paymaster scope | **Full sponsorship** of all user txs on ZKSync Era. The paymaster contract is owned by the **OffshoreSync LLC Treasury Safe**; top-ups flow from Stripe → Lili Finance → Circle Mint → LLC Safe → paymaster pool (four-step audit trail, see `../Cofferdam/README.md` §11.4). |
+| Paymaster scope | **Full sponsorship** of all user txs on ZKSync Era. The paymaster contract is owned by the **OffshoreSync LLC Treasury Safe**; top-ups flow from Stripe → Lili Finance → Circle Mint → LLC Safe → paymaster pool (four-step audit trail, see `../cofferdam-app/ARCHITECTURE.md` §11.4). |
 | Verifier location (v1) | **Off our chain.** Self's `IdentityVerificationHubImplV2` on Celo validates the proof + policy. We consume the result via LayerZero V2 OApp messaging. |
 | Verifier location (v2, future) | On-chain on ZKSync Era. Foundation preserved in `contracts/v2/self/`; activated if Self ever ships native ZKSync Era deployment. |
 | Cross-chain transport | **LayerZero V2.** Default DVN config on testnet; production minimum 2-of-3 DVNs. |
@@ -356,7 +365,7 @@ Mounted on:
 
 ### 5.3 Services
 
-- **`services/paymaster/`** *(new)* — sponsorship signature service (decides which OffshoreSync user operations to co-sign for paymaster sponsorship), per-account / per-IP / per-selector rate limits. *Treasury balance monitoring and top-up orchestration live in the separate **Cofferdam Partners platform** Treasury orchestrator Worker (see `../Cofferdam/README.md` §11.4), which manages paymaster pools for all integrators including OffshoreSync as the Tier 1 reference integrator.*
+- **`services/paymaster/`** *(new)* — sponsorship signature service (decides which OffshoreSync user operations to co-sign for paymaster sponsorship), per-account / per-IP / per-selector rate limits. *Treasury balance monitoring and top-up orchestration live in the separate **Cofferdam Partners platform** Treasury orchestrator Worker (see `../cofferdam-app/ARCHITECTURE.md` §11.4), which manages paymaster pools for all integrators including OffshoreSync as the Tier 1 reference integrator.*
 - **`services/chainIndexer/`** *(new)* — `viem`-based watcher for `NullifierBound`, `PasskeyAdded`, `PasskeyRevoked`. Idempotent. Resumes from last processed block stored in Mongo.
 
 ### 5.4 Mongo schema changes (`models/User.js`)
@@ -587,7 +596,7 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 - **Self IdentityVerificationHubImplV2 upgrades on Celo.** Their hub is upgradeable. If they push a breaking change to `verify(...)` or the `customVerificationHook` ABI, our `OffshoreSyncCeloVerifier` would need an upgrade. Mitigation: integration test against staging hub on Celo Sepolia in CI; weekly diff of mainnet hub bytecode for drift detection.
 - **LZ message failure handling.** LZ messages can be stuck / replay-needed in rare cases. Need a `manualReplay()` admin function on `OffshoreSyncCeloVerifier` and an ops runbook.
 - **Country public input** may not be exposed by Self's `customVerificationHook` output — confirm against `ISelfVerificationRoot.GenericDiscloseOutputV2` once we wire it. Drop `identity.passportCountry` from the schema if so. (Self's example does expose `gender`, `nationality`, `olderThan`; likely fine.)
-- **Paymaster economics on ZKSync Era.** Model worst-case daily op count × ZKSync L2 gas → size treasury runway. Alert at < 1 day burn. Detailed economic model and per-tier MAU costing in `../Cofferdam/README.md` §10; LLC-side anti-runaway caps and reconciliation in OffshoreSync's internal treasury runbook (`../financial/TREASURY.md` §6–7).
+- **Paymaster economics on ZKSync Era.** Model worst-case daily op count × ZKSync L2 gas → size treasury runway. Alert at < 1 day burn. Detailed economic model and per-tier MAU costing in `../cofferdam-app/ARCHITECTURE.md` §10; LLC-side anti-runaway caps and reconciliation in OffshoreSync's internal treasury runbook (`../financial/TREASURY.md` §6–7).
 - **Cofferdam app store reviews.** Crypto + KYC features in a dedicated wallet app face different review surface vs. a job-board app. Maintain a release runbook + reviewer responses doc.
 - **Cofferdam adoption friction.** Users must install a second app for verified-identity flows. Mitigate via clear value-prop in the install nudge + frictionless deep-linking + onboarding cohort UX testing.
 
@@ -652,7 +661,7 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 - **Social recovery** beyond "re-prove passport." Multi-sig + guardian-based recovery deferred.
 - **Tokenization / loyalty / rewards.** Possible later vertical (verified maritime workers might earn a token tied to work history) but not in scope here.
 - **Recruiter-side identity proof variants** (e.g. company KYB). Worker-side only for v1.
-- **DAO governance** of any contract. The owner of every OffshoreSync contract (`OffshoreSyncCeloVerifier`, `OffshoreSyncReceiver`, `OffshoreSyncEscrow`, `OffshoreSyncPaymaster`) is the **OffshoreSync LLC Treasury Safe** from deployment onward — the deploy script's last step is `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` so the deployer EOA never retains authority past the deployment block. Safe signer composition is governed by the OffshoreSync LLC treasury maturity ladder (public outline in `../Cofferdam/README.md` §11.2; private operational specifics in `../financial/TREASURY.md`). The contract-owner address never changes from deployment onward — only the off-chain signer set behind that address evolves. Full on-chain DAO governance is a v3+ concern.
+- **DAO governance** of any contract. The owner of every OffshoreSync contract (`OffshoreSyncCeloVerifier`, `OffshoreSyncReceiver`, `OffshoreSyncEscrow`, `OffshoreSyncPaymaster`) is the **OffshoreSync LLC Treasury Safe** from deployment onward — the deploy script's last step is `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` so the deployer EOA never retains authority past the deployment block. Safe signer composition is governed by the OffshoreSync LLC treasury maturity ladder (public outline in `../cofferdam-app/ARCHITECTURE.md` §11.2; private operational specifics in `../financial/TREASURY.md`). The contract-owner address never changes from deployment onward — only the off-chain signer set behind that address evolves. Full on-chain DAO governance is a v3+ concern.
 - **Direct fiat on/off-ramp inside Cofferdam.** We rely on third-party ramps (Mento, MiniPay, Valora, etc.) accessed via Celo address — we don't operate as an MSB.
 - **Cross-chain bridging beyond LayerZero V2.** Only Celo ↔ ZKSync via LZ. No additional chains.
 - **Cofferdam app store on Web3-only stores** (e.g. Solana Mobile Stack-style alternative app stores). Standard iOS / Android only for v1.

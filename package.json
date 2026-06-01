@@ -16,6 +16,8 @@
     "deploy:phase1:sepolia": "hardhat deploy-zksync --script deploy-phase1.ts --network zkSyncSepolia",
     "deploy:v1-zksync:local": "hardhat deploy-zksync --script deploy-v1-zksync.ts --network inMemoryNode",
     "deploy:v1-zksync:sepolia": "hardhat deploy-zksync --script deploy-v1-zksync.ts --network zkSyncSepolia",
+    "deploy:v2-self:local": "hardhat deploy-zksync --script deploy-v2-self.ts --network inMemoryNode",
+    "deploy:v2-self:sepolia": "hardhat deploy-zksync --script deploy-v2-self.ts --network zkSyncSepolia",
     "test": "hardhat test --network inMemoryNode",
     "clean": "hardhat clean"
   },
@@ -26,6 +28,7 @@
     "@matterlabs/hardhat-zksync-solc": "^1.5.0",
     "@matterlabs/hardhat-zksync-telemetry": "^1.1.1",
     "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
+    "@selfxyz/core": "1.2.0-beta.1",
     "@types/chai": "^4",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.0",
