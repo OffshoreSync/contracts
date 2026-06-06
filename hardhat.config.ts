@@ -4,7 +4,7 @@ import '@nomicfoundation/hardhat-chai-matchers';
 import 'dotenv/config';
 
 // ──────────────────────────────────────────────────────────────────────────────
-// OffshoreSync — ZKSync Era contracts (Phase 0 spike)
+// Cofferdam — ZKSync Era contracts (Phase 0 spike)
 // Goal: prove that Self.xyz's snarkjs-generated Groth16 verifier compiles
 // cleanly under zksolc and deploys successfully on ZKSync Era Sepolia.
 // ──────────────────────────────────────────────────────────────────────────────

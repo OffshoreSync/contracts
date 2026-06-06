@@ -26,7 +26,7 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
 - **Sybil resistance**: Self.xyz passport ZK proof is **mandatory before sensitive actions** (post, comment, apply, recruiter publish, message a stranger). One passport ↔ one smart account, enforced on-chain via a nullifier registry.
 - **Devices**: ≤ **3 passkeys per account**, enforced by a custom on-chain validator. Add / revoke flows ship on day one.
 - **Gas**: OffshoreSync **paymaster sponsors every user tx** on ZKSync Era (account deploy, passkey ops, escrow, check-in/out, future on-chain features) within per-account rate limits.
-- **Proof verification (v1, active)**: Self.xyz's `IdentityVerificationHubImplV2` on Celo validates the Groth16 proof + policy (OFAC, age, country). On success, our `OffshoreSyncCeloVerifier` (extends `SelfVerificationRoot` + LayerZero `OApp`) fires `_lzSend` with a minimal `(account, nullifier, configId, timestamp)` payload to ZKSync Era. `OffshoreSyncReceiver` on ZKSync Era receives via `_lzReceive` and persists the `(account ↔ nullifier)` binding. Inherits Self's full security model for free.
+- **Proof verification (v1, active)**: Self.xyz's `IdentityVerificationHubImplV2` on Celo validates the Groth16 proof + policy (OFAC, age, country). On success, our `CofferdamCeloVerifier` (extends `SelfVerificationRoot` + LayerZero `OApp`) fires `_lzSend` with a minimal `(account, nullifier, configId, timestamp)` payload to ZKSync Era. `CofferdamReceiver` on ZKSync Era receives via `_lzReceive` and persists the `(account ↔ nullifier)` binding. Inherits Self's full security model for free.
 - **Dual-chain split**: **ZKSync Era = enterprise/B2B** (identity binding, contract escrow, proof-of-presence, payroll, audit trail, native AA + paymaster). **Celo = consumer/retail fintech** (USDC on/off-ramp, cross-border remittances via MiniPay / Valora / Mento, mobile money UX in emerging markets). LayerZero V2 is the bridge in both directions: Self attestations Celo→ZKSync; settled USDC ZKSync→Celo.
 - **Companion app**: A separate React Native app branded **Cofferdam** (`cofferdam.xyz`) holds the Web3 surface (wallet, passkey mgmt, passport scan, escrow signing, on/off-ramp). The main OffshoreSync app stays Capacitor + remains open + non-Web3 for the social-networking experience. Cofferdam is open-source and pitched as a maritime-industry RWA wallet with an SDK other apps can integrate. Decision pending final polish; scope outline only in §4.5.
 - **Proof generation**: Self's TEE (Trusted Execution Environment) — same path their production app uses for real and mock passports. The phone encrypts circuit inputs and ships them to Self's WebSocket relayer; the TEE generates the Groth16 proof + signs an attestation that the inputs came from an authentic NFC scan. **Raw passport data never leaves the device unencrypted.** Free during Self's growth phase; pricing/SLA TBD long-term.
@@ -36,7 +36,7 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
 - **Estimated effort**: ~8-9 weeks across 5 phases (revised down from 9-10 — LayerZero V2 removes the need for our own attester sig + merkle root mirroring on ZKSync).
 - **Phase 0 status (2026-05-14)**: ✅ first gate GREEN — Self's `Verifier_vc_and_disclose` compiles + deploys on ZKSync Era Sepolia (`0xf23537eF06fC1283F5be80676418b71aEd81b7E5`). Preserved in `v2/` as foundation for future native deployment.
 - **Phase 1 first slice status (2026-05-16)**: ✅ `SelfAttesterRegistry` + `NullifierRegistry` shipped with 37 passing unit tests + local deploy script (`yarn deploy:phase1:local`). **Moved to `v2/` after architectural review on 2026-05-17.**
-- **Phase 1 second slice status (current)**: 🔄 hybrid pivot in progress. `contracts/v1/{celo,zksync}/` scaffolded with READMEs. Next: validate LayerZero V2 on ZKSync Era, implement `OffshoreSyncCeloVerifier` + `OffshoreSyncReceiver` + `OffshoreSyncEscrow` + `OffshoreSyncPaymaster`.
+- **Phase 1 second slice status (current)**: 🔄 hybrid pivot in progress. `contracts/v1/{celo,zksync}/` scaffolded with READMEs. Next: validate LayerZero V2 on ZKSync Era, implement `CofferdamCeloVerifier` + `CofferdamReceiver` + `CofferdamSpotEscrow` + `CofferdamPaymaster`.
 
 ---
 
@@ -48,7 +48,7 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
 | Passport proof | **Mandatory before sensitive actions** (not at signup). Verified badge on profile once proven. |
 | Self.xyz integration | **Consume Self's deployed contracts on Celo via `SelfVerificationRoot` abstract base** (their canonical integration pattern, used in `selfxyz/self-layerzero-example`). Mobile UX wraps `@selfxyz/mobile-sdk-alpha`. |
 | Legacy auth | **Coexist for a transition window** (Google / Apple / local password kept for ~2 releases). |
-| Passkey cap | **3 per account, enforced on-chain** by `OffshoreSyncAccountValidator` on ZKSync Era. |
+| Passkey cap | **3 per account, enforced on-chain** by `CofferdamAccountValidator` on ZKSync Era. |
 | Paymaster scope | **Full sponsorship** of all user txs on ZKSync Era. The paymaster contract is owned by the **OffshoreSync LLC Treasury Safe**; top-ups flow from Stripe → Lili Finance → Circle Mint → LLC Safe → paymaster pool (four-step audit trail, see `../cofferdam-app/ARCHITECTURE.md` §11.4). |
 | Verifier location (v1) | **Off our chain.** Self's `IdentityVerificationHubImplV2` on Celo validates the proof + policy. We consume the result via LayerZero V2 OApp messaging. |
 | Verifier location (v2, future) | On-chain on ZKSync Era. Foundation preserved in `contracts/v2/self/`; activated if Self ever ships native ZKSync Era deployment. |
@@ -86,7 +86,7 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
             ▼                                                       │
 ┌─────────────────── Celo (verification chain) ───────────────────┐  │
 │  Self IdentityVerificationHubImplV2.verify()                     │  │
-│       └─▶ OffshoreSyncCeloVerifier (v1/celo/)                    │  │
+│       └─▶ CofferdamCeloVerifier (v1/celo/)                    │  │
 │              (extends SelfVerificationRoot + LayerZero OApp)     │  │
 │              └─▶ customVerificationHook                          │  │
 │                     └─▶ _lzSend(ZKSync Era EID, payload, …)      │  │
@@ -100,15 +100,15 @@ This document is the consolidated, authoritative spec for the Web3 conversion. I
                               │ (validates + relays)                   │
                               ▼                                       │
 ┌──────────────────── ZKSync Era (enterprise chain) ───────────────┐  │
-│  OffshoreSyncReceiver (v1/zksync/)                                │  │
+│  CofferdamReceiver (v1/zksync/)                                │  │
 │       └─▶ _lzReceive → binds (account ↔ nullifier)                │  │
 │       └─▶ exposes isAccountBound() / nullifier reads              │  │
 │                                                                   │  │
 │  ZKSync SSO account factory (stock) + native AA                   │  │
-│  OffshoreSyncAccountValidator  (3-passkey cap)                    │  │
-│  OffshoreSyncPaymaster         (sponsorship + rate limits)        │ ◀┘
+│  CofferdamAccountValidator  (3-passkey cap)                    │  │
+│  CofferdamPaymaster         (sponsorship + rate limits)        │ ◀┘
 │                                  └─ gates on isAccountBound()       │
-│  OffshoreSyncEscrow            (job contracts, milestones,          │
+│  CofferdamSpotEscrow            (job contracts, milestones,          │
 │                                  proof-of-presence check-in/out)    │
 └───────────────────────────────────────────────────────────────────┬─┘
                                                                     │
@@ -142,10 +142,10 @@ The dual-chain split is **not a compromise** — it's each chain doing what it's
 
 ### Concrete user flow (post-launch)
 
-1. **Onboarding** — Worker downloads Cofferdam, creates passkey (Secure Enclave / StrongBox), passport scan via Self mobile SDK, proof generated in Self TEE, submitted to OffshoreSyncCeloVerifier on Celo. LZ V2 relays attestation to ZKSync Era OffshoreSyncReceiver (~30-45s end-to-end).
-2. **Job acceptance** — Recruiter posts vacancy via main OffshoreSync app (Capacitor, no Web3). Worker applies. On match: recruiter locks payment in OffshoreSyncEscrow on ZKSync Era (paymaster-sponsored).
+1. **Onboarding** — Worker downloads Cofferdam, creates passkey (Secure Enclave / StrongBox), passport scan via Self mobile SDK, proof generated in Self TEE, submitted to CofferdamCeloVerifier on Celo. LZ V2 relays attestation to ZKSync Era CofferdamReceiver (~30-45s end-to-end).
+2. **Job acceptance** — Recruiter posts vacancy via main OffshoreSync app (Capacitor, no Web3). Worker applies. On match: recruiter locks payment in CofferdamSpotEscrow on ZKSync Era (paymaster-sponsored).
 3. **Work period** — Worker checks in via Cofferdam (proof-of-presence on ZKSync, sponsored). Worker works according to contract. Worker checks out.
-4. **Settlement** — OffshoreSyncEscrow auto-releases payment in USDC to worker's ZKSync address.
+4. **Settlement** — CofferdamSpotEscrow auto-releases payment in USDC to worker's ZKSync address.
 5. **Off-ramp** — Worker initiates ZKSync→Celo bridge in Cofferdam (LZ V2). Funds arrive on Celo as native USDC.
 6. **Family transfer / fiat** — Worker uses MiniPay / Valora / direct send to family wallet on Celo. Family off-ramps via Mento to local fiat.
 
@@ -161,7 +161,7 @@ Repo: `contracts/` at workspace root. Two parallel workspaces (Hardhat for ZKSyn
 
 ### 3.1 v1/ — LayerZero hybrid contracts (active dev)
 
-#### `v1/celo/OffshoreSyncCeloVerifier.sol`
+#### `v1/celo/CofferdamCeloVerifier.sol`
 
 Extends both `SelfVerificationRoot` (from `@selfxyz/contracts`) and LayerZero V2's `OApp`. After Self's `IdentityVerificationHubImplV2` validates the user's Groth16 proof + policy on Celo, our overridden `customVerificationHook` fires. We:
 
@@ -171,9 +171,9 @@ Extends both `SelfVerificationRoot` (from `@selfxyz/contracts`) and LayerZero V2
 
 Pre-funded with CELO for LZ messaging fees (~0.001-0.01 CELO/message). `receive() external payable {}` for top-ups. `withdraw()` for owner. **Compiles with `solc`, not `zksolc`** — deployed to Celo.
 
-#### `v1/zksync/OffshoreSyncReceiver.sol`
+#### `v1/zksync/CofferdamReceiver.sol`
 
-LayerZero V2 `OApp` receiver. Overrides `_lzReceive(Origin, bytes32, bytes, address, bytes)` to decode the cross-chain message from `OffshoreSyncCeloVerifier` and persist the `(account ↔ nullifier)` binding.
+LayerZero V2 `OApp` receiver. Overrides `_lzReceive(Origin, bytes32, bytes, address, bytes)` to decode the cross-chain message from `CofferdamCeloVerifier` and persist the `(account ↔ nullifier)` binding.
 
 Storage:
 - `mapping(address => bytes32) accountToNullifier`
@@ -184,11 +184,11 @@ Public read API: `isAccountBound(address) → bool`, `isNullifierBound(bytes32) 
 
 Events: `NullifierBound(address indexed account, bytes32 indexed nullifier, uint32 srcEid, uint256 timestamp)`.
 
-#### `v1/zksync/OffshoreSyncEscrow.sol`
+#### `v1/zksync/CofferdamSpotEscrow.sol`
 
 Job-contract escrow + proof-of-presence. Recruiter locks payment; worker checks in / out; on completion the funds auto-settle to worker's verified address.
 
-Identity gate: every write requires `OffshoreSyncReceiver.isAccountBound(msg.sender) == true`. No Self-verified passport → no on-chain employment relationship.
+Identity gate: every write requires `CofferdamReceiver.isAccountBound(msg.sender) == true`. No Self-verified passport → no on-chain employment relationship.
 
 Surface (refine in next session):
 
@@ -201,7 +201,7 @@ function dispute(uint256 contractId, string reason)           // either party
 function settle(uint256 contractId)                           // anyone, after checkout
 ```
 
-#### `v1/zksync/OffshoreSyncAccountValidator.sol`
+#### `v1/zksync/CofferdamAccountValidator.sol`
 
 Extends ZKSync SSO's stock passkey validator.
 - Enforces `passkeys.length <= 3`.
@@ -210,13 +210,28 @@ Extends ZKSync SSO's stock passkey validator.
 - `getPasskeys() view returns (Passkey[] memory)`
 - Emits `PasskeyAdded` / `PasskeyRevoked` for off-chain indexing.
 
-#### `v1/zksync/OffshoreSyncPaymaster.sol`
+> **Rev-7.7 — tiered authorities + one-way upgrade ratchet.** Beyond the
+> passkey cap, the validator hosts a **tiered authority set** (full spec:
+> `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` §2.5). A **high-tier** device
+> passkey may sign anything. An **untrusted low-tier** authority — a consumer's
+> `local` password / Google-Apple OAuth session (the migration in §7; the
+> `authProvider` + `wallet.migrationStatus` fields in §5.4) — may authorise
+> **only** the enrolment of the *first* passkey, with zero value, and is
+> **permanently locked out of `addPasskey`/`addAuthority`/`revoke` the instant
+> that first passkey registers**, so a leaked credential can never add an
+> attacker passkey. `PolisSessionAuthority` (`ENTERPRISE_MODULE_PLAN.md`
+> §3.3.2) is the *managed* low-tier exception: centrally SCIM-revocable, it
+> persists with OR semantics and is removed only by `recoverWithSelf`.
+> Enforced in `validateTransaction` by gating allowed selectors/value on the
+> signing authority's tier. Not yet implemented — tracked with §3.1.
+
+#### `v1/zksync/CofferdamPaymaster.sol`
 
 `IPaymaster` implementation.
 - Sponsors txs only when:
   - `from` is a known OffshoreSync account (deployed via our factory path).
   - The userOp is signed by a currently-registered passkey on that account.
-  - Sender is bound in `OffshoreSyncReceiver.isAccountBound(from) == true`.
+  - Sender is bound in `CofferdamReceiver.isAccountBound(from) == true`.
   - Selector is in the sponsorship whitelist.
   - Per-account, per-IP, per-selector rate limits are below cap.
 - Whitelisted selectors: account deploy, `addPasskey`, `revokePasskey`, escrow `checkIn`/`checkOut`/`settle`, and a forward-looking allow-list for future on-chain features.
@@ -246,7 +261,7 @@ See `contracts/contracts/v2/README.md` for the full v2 rationale and future-work
 
 - **Identity proof correctness**: Self's deployed contracts on Celo (TEE-attested registration → merkle root → Groth16 proof → OFAC / age / country policy).
 - **Cross-chain message authenticity**: LayerZero V2 DVN network. Default = 1 DVN + 1 Executor on testnet; mainnet = 2-of-3 DVNs minimum.
-- **OffshoreSyncReceiver storage** = source of truth for `(account ↔ nullifier)` on ZKSync Era. Mongo mirrors it via an event indexer.
+- **CofferdamReceiver storage** = source of truth for `(account ↔ nullifier)` on ZKSync Era. Mongo mirrors it via an event indexer.
 - **The indexer is idempotent** and re-runnable from genesis to rebuild Mongo state if needed.
 - **Worst case under DVN compromise**: attacker can delay or reorder verifications, **not fabricate them** — Self's TEE + merkle-root checks have already happened upstream on Celo before the LZ message is sent.
 
@@ -273,7 +288,7 @@ Native-RN integration of `zksync-sso` patterns.
 Self's official SDK engine, mid-refactor toward a WebView + native-shell delivery model. We do **not** port Self's RN code — we consume their published SDK directly (it's RN-native).
 - **Native shell** (iOS/Android): hosts the WebView engine + provides NFC permissions and the `IsoDep`/`CoreNFC` bridge that the SDK calls into for the physical passport scan.
 - **Proof generation**: **TEE-side** — the SDK encrypts circuit inputs and WebSocket-ships them to Self's TEE relayer (staging or production endpoint, env-configured). The SDK then returns `{ proof, publicSignals, attesterSig }`. snarkjs does **not** run on the phone.
-- **Under v1**: we submit the proof to **Self's hub on Celo** (not our own contract). Self's hub validates everything and our `OffshoreSyncCeloVerifier` consumes the result via `customVerificationHook`. The mobile SDK already knows how to target the Celo hub — we just configure scope + endpoint.
+- **Under v1**: we submit the proof to **Self's hub on Celo** (not our own contract). Self's hub validates everything and our `CofferdamCeloVerifier` consumes the result via `customVerificationHook`. The mobile SDK already knows how to target the Celo hub — we just configure scope + endpoint.
 - **Dev mode**: a build flag swaps `WS_DB_RELAYER` (`wss://websocket.self.xyz`) for `WS_DB_RELAYER_STAGING` (`wss://websocket.staging.self.xyz`) so we can use Self's staging TEE with programmatically-generated mock passports from `@selfxyz/common` — no Self mobile app required at any point in our pipeline.
 
 ### 4.3 Web fallbacks (main OffshoreSync app, Capacitor)
@@ -492,6 +507,14 @@ Provider tree: `AuthProvider > Web3Provider > PermissionProvider > SocketProvide
 
 Account recovery (all 3 passkeys lost): user re-proves passport → nullifier matches existing account → server re-binds a fresh passkey to the same on-chain account via a paymaster-sponsored admin path.
 
+> **Rev-7.7.** The migration converts `local`/`google`/`apple` logins into a
+> high-tier device passkey under the **one-way upgrade ratchet**
+> (`cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` §2.5 + the §3.12 flow): the
+> non-passkey login is an *untrusted low-tier* authority that may enrol only
+> the first passkey, then is permanently locked out. Because that ratchet
+> removes the password as a recovery path, **passport re-prove (Self.xyz) is
+> the recovery floor** — the row above is exactly that floor.
+
 ---
 
 ## 8. Security & privacy
@@ -532,9 +555,9 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 **Second slice (current, 🔄 in progress)** — v1/ hybrid stack.
 - ✅ Repo restructured: `contracts/v1/{celo,zksync}/` scaffolded with READMEs documenting planned contracts. 37 unit tests still passing.
 - ⏳ LayerZero V2 validation on ZKSync Era — verify endpoint addresses (mainnet EID 30165, Sepolia TBD), confirm zksolc compiles `@layerzerolabs/oapp-evm/contracts/oapp/OApp.sol`, deploy a "hello world" OApp pair on Celo Sepolia ↔ ZKSync Sepolia.
-- ⏳ Implement `OffshoreSyncCeloVerifier` (Celo source, extends `SelfVerificationRoot` + LZ `OApp`).
-- ⏳ Implement `OffshoreSyncReceiver` (ZKSync target, LZ `OApp` receiver) with unit tests.
-- ⏳ Implement `OffshoreSyncAccountValidator`, `OffshoreSyncPaymaster`, `OffshoreSyncEscrow` skeletons + happy-path tests.
+- ⏳ Implement `CofferdamCeloVerifier` (Celo source, extends `SelfVerificationRoot` + LZ `OApp`).
+- ⏳ Implement `CofferdamReceiver` (ZKSync target, LZ `OApp` receiver) with unit tests.
+- ⏳ Implement `CofferdamAccountValidator`, `CofferdamPaymaster`, `CofferdamSpotEscrow` skeletons + happy-path tests.
 - ⏳ End-to-end smoke test: Celo Sepolia → ZKSync Sepolia, single nullifier binding round-trip.
 - ⏳ Testnet deploy + addresses committed to `react-server/.env.staging` and Cofferdam config.
 
@@ -590,11 +613,11 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 
 ### Ongoing
 - **LayerZero DVN trust.** Default config = 1 DVN + 1 Executor; this is a single point of failure for cross-chain message integrity. Mitigation: configure 2-of-3 DVNs minimum for production mainnet deployment. Worst-case DVN compromise can delay or reorder verifications but **cannot fabricate them** — Self's TEE + merkle-root checks have already happened upstream on Celo.
-- **LayerZero fees on Celo.** OffshoreSyncCeloVerifier pays LZ messaging fees from its own balance. Recommend pre-funding ~0.5 CELO per ~50 verifications. Top-up cron + low-balance alert needed.
+- **LayerZero fees on Celo.** CofferdamCeloVerifier pays LZ messaging fees from its own balance. Recommend pre-funding ~0.5 CELO per ~50 verifications. Top-up cron + low-balance alert needed.
 - **Self circuit version churn.** New circuit ⇒ new vkey at Self's hub. Their `customVerificationHook` payload schema may change. Need to watch their SDK release notes + handle gracefully (versioned `configId`).
 - **Self TEE availability / pricing.** Self runs the TEE relayer free during the growth phase. If they introduce pricing or strict rate limits before our launch, we'd need to either pay for higher tier access, negotiate via the builder grant (see §13), or eventually self-host (heavy: requires SGX/SEV hardware).
-- **Self IdentityVerificationHubImplV2 upgrades on Celo.** Their hub is upgradeable. If they push a breaking change to `verify(...)` or the `customVerificationHook` ABI, our `OffshoreSyncCeloVerifier` would need an upgrade. Mitigation: integration test against staging hub on Celo Sepolia in CI; weekly diff of mainnet hub bytecode for drift detection.
-- **LZ message failure handling.** LZ messages can be stuck / replay-needed in rare cases. Need a `manualReplay()` admin function on `OffshoreSyncCeloVerifier` and an ops runbook.
+- **Self IdentityVerificationHubImplV2 upgrades on Celo.** Their hub is upgradeable. If they push a breaking change to `verify(...)` or the `customVerificationHook` ABI, our `CofferdamCeloVerifier` would need an upgrade. Mitigation: integration test against staging hub on Celo Sepolia in CI; weekly diff of mainnet hub bytecode for drift detection.
+- **LZ message failure handling.** LZ messages can be stuck / replay-needed in rare cases. Need a `manualReplay()` admin function on `CofferdamCeloVerifier` and an ops runbook.
 - **Country public input** may not be exposed by Self's `customVerificationHook` output — confirm against `ISelfVerificationRoot.GenericDiscloseOutputV2` once we wire it. Drop `identity.passportCountry` from the schema if so. (Self's example does expose `gender`, `nationality`, `olderThan`; likely fine.)
 - **Paymaster economics on ZKSync Era.** Model worst-case daily op count × ZKSync L2 gas → size treasury runway. Alert at < 1 day burn. Detailed economic model and per-tier MAU costing in `../cofferdam-app/ARCHITECTURE.md` §10; LLC-side anti-runaway caps and reconciliation in OffshoreSync's internal treasury runbook (`../financial/TREASURY.md` §6–7).
 - **Cofferdam app store reviews.** Crypto + KYC features in a dedicated wallet app face different review surface vs. a job-board app. Maintain a release runbook + reviewer responses doc.
@@ -607,11 +630,11 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 ### Contracts (`contracts/` at workspace root)
 
 **v1/ active dev** — see `contracts/contracts/v1/README.md` for full architecture.
-- `contracts/v1/celo/OffshoreSyncCeloVerifier.sol` — extends `SelfVerificationRoot` + LZ `OApp`. *(planned, Phase 1 second slice)*
-- `contracts/v1/zksync/OffshoreSyncReceiver.sol` — LZ `OApp` receiver, holds nullifier bindings. *(planned, Phase 1 second slice)*
-- `contracts/v1/zksync/OffshoreSyncEscrow.sol` — job contracts + proof-of-presence. *(planned, Phase 1 second slice)*
-- `contracts/v1/zksync/OffshoreSyncAccountValidator.sol` — 3-passkey cap. *(planned, Phase 1 second slice)*
-- `contracts/v1/zksync/OffshoreSyncPaymaster.sol` — sponsorship + rate limits, gates on `isAccountBound`. *(planned, Phase 1 second slice)*
+- `contracts/v1/celo/CofferdamCeloVerifier.sol` — extends `SelfVerificationRoot` + LZ `OApp`. *(planned, Phase 1 second slice)*
+- `contracts/v1/zksync/CofferdamReceiver.sol` — LZ `OApp` receiver, holds nullifier bindings. *(planned, Phase 1 second slice)*
+- `contracts/v1/zksync/CofferdamSpotEscrow.sol` — job contracts + proof-of-presence. *(planned, Phase 1 second slice)*
+- `contracts/v1/zksync/CofferdamAccountValidator.sol` — 3-passkey cap. *(planned, Phase 1 second slice)*
+- `contracts/v1/zksync/CofferdamPaymaster.sol` — sponsorship + rate limits, gates on `isAccountBound`. *(planned, Phase 1 second slice)*
 - `contracts/v1/celo/README.md`, `contracts/v1/zksync/README.md` — *(✅ done 2026-05-17)*.
 - Deploy scripts: `scripts/deploy-v1-celo.ts`, `scripts/deploy-v1-zksync.ts` *(planned)*.
 - Tooling note: Celo workspace may end up as a sibling Hardhat or Foundry repo. Decision deferred.
@@ -661,7 +684,7 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 - **Social recovery** beyond "re-prove passport." Multi-sig + guardian-based recovery deferred.
 - **Tokenization / loyalty / rewards.** Possible later vertical (verified maritime workers might earn a token tied to work history) but not in scope here.
 - **Recruiter-side identity proof variants** (e.g. company KYB). Worker-side only for v1.
-- **DAO governance** of any contract. The owner of every OffshoreSync contract (`OffshoreSyncCeloVerifier`, `OffshoreSyncReceiver`, `OffshoreSyncEscrow`, `OffshoreSyncPaymaster`) is the **OffshoreSync LLC Treasury Safe** from deployment onward — the deploy script's last step is `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` so the deployer EOA never retains authority past the deployment block. Safe signer composition is governed by the OffshoreSync LLC treasury maturity ladder (public outline in `../cofferdam-app/ARCHITECTURE.md` §11.2; private operational specifics in `../financial/TREASURY.md`). The contract-owner address never changes from deployment onward — only the off-chain signer set behind that address evolves. Full on-chain DAO governance is a v3+ concern.
+- **DAO governance** of any contract. The owner of every Cofferdam contract (`CofferdamCeloVerifier`, `CofferdamReceiver`, `CofferdamSpotEscrow`, `CofferdamPaymaster`) is the **OffshoreSync LLC Treasury Safe** from deployment onward — the deploy script's last step is `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` so the deployer EOA never retains authority past the deployment block. Safe signer composition is governed by the OffshoreSync LLC treasury maturity ladder (public outline in `../cofferdam-app/ARCHITECTURE.md` §11.2; private operational specifics in `../financial/TREASURY.md`). The contract-owner address never changes from deployment onward — only the off-chain signer set behind that address evolves. Full on-chain DAO governance is a v3+ concern.
 - **Direct fiat on/off-ramp inside Cofferdam.** We rely on third-party ramps (Mento, MiniPay, Valora, etc.) accessed via Celo address — we don't operate as an MSB.
 - **Cross-chain bridging beyond LayerZero V2.** Only Celo ↔ ZKSync via LZ. No additional chains.
 - **Cofferdam app store on Web3-only stores** (e.g. Solana Mobile Stack-style alternative app stores). Standard iOS / Android only for v1.
@@ -669,7 +692,7 @@ Account recovery (all 3 passkeys lost): user re-proves passport → nullifier ma
 Each will get its own plan once the foundation here is in production.
 
 **Reversed from earlier plan (now IN scope):**
-- **On-chain job-contract escrow** (`OffshoreSyncEscrow`) — added as part of v1/zksync. Drives the killer product feature (recruiter locks payment, worker check-in/out, auto-settle).
+- **On-chain job-contract escrow** (`CofferdamSpotEscrow`) — added as part of v1/zksync. Drives the killer product feature (recruiter locks payment, worker check-in/out, auto-settle).
 - **Celo USDC remittance flow** — added as part of the v1 dual-chain financial architecture. Phase 2 ships Cofferdam's Payments screen with LZ bridge + Celo send.
 
 ---
@@ -698,7 +721,7 @@ Self publishes bounties for new applications built on their protocol. OffshoreSy
 
 Matter Labs runs ZKSync Era ecosystem grants for projects showcasing native AA + paymaster + production use cases.
 
-- **Enterprise paymaster showcase** — OffshoreSyncPaymaster sponsors verified workers across passkey ops, escrow check-in/out, settlement. Real production user volume from maritime industry.
+- **Enterprise paymaster showcase** — CofferdamPaymaster sponsors verified workers across passkey ops, escrow check-in/out, settlement. Real production user volume from maritime industry.
 - **First Self.xyz / LayerZero V2 hybrid integration on ZKSync Era** — references the Self bounty angle.
 - **Real-world adoption signal** — OffshoreSync has an existing user base (recruiters + offshore/onshore workers); not a green-field experiment.
 
@@ -723,4 +746,4 @@ Celo's grants focus on real-world fintech use cases in emerging markets.
 
 ---
 
-_Last updated: 2026-05-17 — Architecture pivoted to hybrid Celo + ZKSync via LayerZero V2. Phase 1 first slice (`SelfAttesterRegistry`, `NullifierRegistry`, 37 passing tests, ZKSync Sepolia verifier deploy) preserved under `contracts/v2/` as foundation for future ZKSync-native Self deployment. Phase 1 second slice (`OffshoreSyncCeloVerifier` + `OffshoreSyncReceiver` + escrow + paymaster + validator under `contracts/v1/`) is active dev. Companion app branding decided: **Cofferdam** (`cofferdam.xyz`), open-source RN wallet for the maritime industry; detailed scope deferred. Repo restructured + READMEs landed in `contracts/contracts/{README,v1/README,v1/celo/README,v1/zksync/README,v2/README}.md`. Next session: validate LayerZero V2 on ZKSync Era + implement the v1 contract pair._
+_Last updated: 2026-05-17 — Architecture pivoted to hybrid Celo + ZKSync via LayerZero V2. Phase 1 first slice (`SelfAttesterRegistry`, `NullifierRegistry`, 37 passing tests, ZKSync Sepolia verifier deploy) preserved under `contracts/v2/` as foundation for future ZKSync-native Self deployment. Phase 1 second slice (`CofferdamCeloVerifier` + `CofferdamReceiver` + escrow + paymaster + validator under `contracts/v1/`) is active dev. Companion app branding decided: **Cofferdam** (`cofferdam.xyz`), open-source RN wallet for the maritime industry; detailed scope deferred. Repo restructured + READMEs landed in `contracts/contracts/{README,v1/README,v1/celo/README,v1/zksync/README,v2/README}.md`. Next session: validate LayerZero V2 on ZKSync Era + implement the v1 contract pair._

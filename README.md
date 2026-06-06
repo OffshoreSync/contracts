@@ -114,8 +114,8 @@ A `false` return on the smoke test is **the desired outcome**. The smoke test fe
 
 ### Phase 1+ contracts (placeholders, not yet written)
 
-- `OffshoreSyncAccountValidator.sol` — 3-passkey cap.
-- `OffshoreSyncPaymaster.sol` — gas sponsorship + rate limits.
+- `CofferdamAccountValidator.sol` — 3-passkey cap.
+- `CofferdamPaymaster.sol` — gas sponsorship + rate limits.
 - `SelfAttesterRegistry.sol` — TEE attester key allow-list.
 - `NullifierRegistry.sol` — `verifyAndBind` + 1 passport ↔ 1 account.
 

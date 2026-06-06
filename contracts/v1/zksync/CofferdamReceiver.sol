@@ -3,10 +3,10 @@ pragma solidity 0.8.28;
 
 import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 
-/// @title OffshoreSyncReceiver
+/// @title CofferdamReceiver
 /// @notice α-2 identity registry. Records `(account ↔ nullifier)` bindings
 ///         produced upstream by the Cofferdam verification flow and exposes
-///         them to downstream contracts (OffshoreSyncEscrow, future paymaster,
+///         them to downstream contracts (CofferdamSpotEscrow, future paymaster,
 ///         settlement) via `IIdentityRegistry`.
 ///
 /// @dev    Era-portable design. The storage layout, public read API, and
@@ -38,8 +38,8 @@ import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 ///         One-shot replay guard: once a nullifier is bound to an account it
 ///         can never be rebound, and once an account is bound it cannot be
 ///         re-used for a different nullifier. This is the cryptographic
-///         mooring of OffshoreSync's sybil resistance.
-contract OffshoreSyncReceiver is IIdentityRegistry {
+///         mooring of Cofferdam's sybil resistance.
+contract CofferdamReceiver is IIdentityRegistry {
     // ────────────────────────────────────────────────────────────────────────
     // Ownership (two-step)
     // ────────────────────────────────────────────────────────────────────────

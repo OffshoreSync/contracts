@@ -6,9 +6,9 @@ import {SelfAttesterRegistry} from "./SelfAttesterRegistry.sol";
 import {SelfPublicSignals} from "./SelfPublicSignals.sol";
 
 /// @title NullifierRegistry
-/// @notice One-shot binding from a Self.xyz passport-derived nullifier to an
-///         OffshoreSync account address. Enforces the "one passport = one account"
-///         rule that powers OffshoreSync's sybil resistance.
+/// @notice One-shot binding from a Self.xyz passport-derived nullifier to a
+///         Cofferdam account address. Enforces the "one passport = one account"
+///         rule that powers Cofferdam's sybil resistance.
 /// @dev    The `verifyAndBind` entrypoint composes three independent security
 ///         checks:
 ///           1. Public-signal sanity: attestation ID matches E_PASSPORT, and the
@@ -42,7 +42,7 @@ contract NullifierRegistry {
 
     /// @notice Application scope (Poseidon-hashed string) that the prover must
     ///         have used when generating the proof. Locks proofs from a different
-    ///         scope (e.g. another OffshoreSync deployment, or a third-party app
+    ///         scope (e.g. another Cofferdam deployment, or a third-party app
     ///         using the same Self stack) out of this registry.
     /// @dev    Set at construction; immutable thereafter. To change scope you
     ///         deploy a new `NullifierRegistry`.

@@ -1,8 +1,8 @@
-# OffshoreSync — On-chain contracts
+# Cofferdam — On-chain contracts
 
 This directory holds Solidity contracts grouped by deployment vintage.
 
-> **Rev-6 status (2026-05-30) — v1 vs v2 is now legacy vs production.** Until rev-6, this directory described "two complementary on-chain architectures" with v1 active and v2 parked. The rev-6 Cloudflare-native stack pivot **promoted v2 to production** and **demoted v1's LayerZero ingress to legacy** (contracts remain deployed, no new production traffic). The escrow contracts inside `v1/zksync/` (`OffshoreSyncEscrow`, the planned `OffshoreSyncRecurringEscrow`, `OffshoreSyncWitnessRegistry`) are **not** legacy — they consume the `IIdentityRegistry` interface and continue to work unchanged with either ingress. What changed is the *identity-binding source*, not the *settlement layer*. See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` for the v2 production flow.
+> **Rev-6 status (2026-05-30) — v1 vs v2 is now legacy vs production.** Until rev-6, this directory described "two complementary on-chain architectures" with v1 active and v2 parked. The rev-6 Cloudflare-native stack pivot **promoted v2 to production** and **demoted v1's LayerZero ingress to legacy** (contracts remain deployed, no new production traffic). The escrow contracts inside `v1/zksync/` (`CofferdamSpotEscrow`, the planned `CofferdamRotationEscrow`, `CofferdamWitnessRegistry`) are **not** legacy — they consume the `IIdentityRegistry` interface and continue to work unchanged with either ingress. What changed is the *identity-binding source*, not the *settlement layer*. See `cofferdam-sdk/IDENTITY_LAYER_DESIGN.md` for the v2 production flow.
 
 ## Versioning model
 
@@ -12,23 +12,23 @@ We pursue **two complementary on-chain architectures** for Self.xyz-backed ident
 
 **Status: α-2 shipped** on local `anvil-zksync`. ZKSync Era Sepolia deploy pending.
 
-- **Identity binding** via `OffshoreSyncReceiver` — α-2 `Ownable` (simulates upstream delivery); α-3 LZ-OApp variant planned but **may be skipped** in favour of the v2 path (see below).
-- **Settlement** via `OffshoreSyncEscrow` — native ETH, identity-gated, full state machine (post → award → checkIn → checkOut → settle, with cancel + dispute/resolve paths). **Two entry paths**: α-2 self-funded (`postContract`) for solo operators; α-3 corporate (`postContractIntent` + `fundContract`) for the enterprise HR ≠ Finance flow. 72 hardhat tests passing (51 α-2 + 21 α-3 corporate flow).
+- **Identity binding** via `CofferdamReceiver` — α-2 `Ownable` (simulates upstream delivery); α-3 LZ-OApp variant planned but **may be skipped** in favour of the v2 path (see below).
+- **Settlement** via `CofferdamSpotEscrow` — native ETH, identity-gated, full state machine (post → award → checkIn → checkOut → settle, with cancel + dispute/resolve paths). **Two entry paths**: α-2 self-funded (`postContract`) for solo operators; α-3 corporate (`postContractIntent` + `fundContract`) for the enterprise HR ≠ Finance flow. 72 hardhat tests passing (51 α-2 + 21 α-3 corporate flow).
 - **Verifier-agnostic** via `IIdentityRegistry` interface — α-2 Ownable receiver, α-3 LZ receiver, and v2 NullifierRegistry are all interchangeable from the escrow's perspective.
 
 ```
 v1/zksync/    → IIdentityRegistry         (shared interface, era-portable)
-                OffshoreSyncReceiver      (α-2 Ownable; simulates upstream binding)
-                OffshoreSyncEscrow        (job-contract escrow, identity-gated)
+                CofferdamReceiver      (α-2 Ownable; simulates upstream binding)
+                CofferdamSpotEscrow        (job-contract escrow, identity-gated)
                                           [+ paymaster deferred to α-3]
                                           [+ LZ-OApp variant α-3, may-skip]
-v1/celo/      → OffshoreSyncCeloVerifier  (LZ-bridge source — pending deprecation
+v1/celo/      → CofferdamCeloVerifier  (LZ-bridge source — pending deprecation
                                           decision; v2 may obviate)
 ```
 
 See `v1/zksync/README.md` for full details. **Deployment target: ZKSync Era L2 only.** We evaluated and rejected building a Cofferdam-operated L3 on ZKSync OS — per [zkSync-Community-Hub discussion #778](https://github.com/zkSync-Community-Hub/zksync-developers/discussions/778), L3s are outside Matter Labs' current roadmap scope. Native AA + paymasters on Era L2 cover everything we need (sponsored gas, AA UX, native USDC) without us operating our own settlement layer.
 
-**Reference-template positioning:** `OffshoreSyncEscrow` is OffshoreSync's first consumer-app contract, but it's intentionally designed as a reference pattern for any Cofferdam-integrated app. See `v1/zksync/README.md` § *Build your own consumer-app contracts* for the layering rules + PR workflow.
+**Reference-template positioning:** `CofferdamSpotEscrow` is OffshoreSync's first consumer-app contract, but it's intentionally designed as a reference pattern for any Cofferdam-integrated app. See `v1/zksync/README.md` § *Build your own consumer-app contracts* for the layering rules + PR workflow.
 
 ### `v2/` — Self-sovereign Self.xyz clone on ZKSync Era
 
@@ -62,15 +62,15 @@ This isn't a compromise — it's each chain doing what it's best at.
 
 ## Ownership and treasury
 
-Every OffshoreSync contract deployed under `v1/` (and, if ever activated, the consumer-facing contracts in `v2/`) is owned by the **OffshoreSync LLC Treasury Safe** — one canonical Safe address per chain, shared across every OffshoreSync v1 contract on that chain. Deploy scripts call `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` as their last step, so the deployer EOA never retains authority past the deployment transaction.
+Every Cofferdam contract deployed under `v1/` (and, if ever activated, the consumer-facing contracts in `v2/`) is owned by the **OffshoreSync LLC Treasury Safe** — one canonical Safe address per chain, shared across every Cofferdam v1 contract on that chain. Deploy scripts call `transferOwnership(LLC_SAFE_ADDRESS_<chain>)` as their last step, so the deployer EOA never retains authority past the deployment transaction.
 
 | Contract | Chain | Owner |
 |---|---|---|
-| `OffshoreSyncCeloVerifier` | Celo Mainnet | LLC Treasury Safe (Celo) |
-| `OffshoreSyncReceiver` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
-| `OffshoreSyncEscrow` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
-| `OffshoreSyncPaymaster` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
-| `OffshoreSyncAccountValidator` *(if added in v1)* | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
+| `CofferdamCeloVerifier` | Celo Mainnet | LLC Treasury Safe (Celo) |
+| `CofferdamReceiver` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
+| `CofferdamSpotEscrow` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
+| `CofferdamPaymaster` | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
+| `CofferdamAccountValidator` *(if added in v1)* | ZKSync Era | LLC Treasury Safe (ZKSync Era) |
 
 The Safe's signer composition scales with org maturity — a phased treasury maturity ladder governs threshold and authorized signers from founder-hot-wallet today through institutional custody at maturity. The contract-owner *address* never changes from deployment onward; only the off-chain signer set behind that address evolves. Public outline of the ladder lives in `../../cofferdam-app/ARCHITECTURE.md` §11.2; private operational specifics (hardware picks, signer identities, caps, storage locations, recovery procedures) live in OffshoreSync LLC's internal treasury runbook at `../../financial/TREASURY.md` (outside any git repo).
 

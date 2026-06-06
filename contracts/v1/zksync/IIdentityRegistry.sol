@@ -3,12 +3,12 @@ pragma solidity 0.8.28;
 
 /// @title IIdentityRegistry
 /// @notice Minimal cross-era identity-binding interface consumed by
-///         OffshoreSyncEscrow (and future paymasters, settlement contracts,
+///         CofferdamSpotEscrow (and future paymasters, settlement contracts,
 ///         etc.). Three concrete implementations satisfy this interface,
 ///         one per architectural era:
 ///
-///           α-2  OffshoreSyncReceiver           (Ownable, simulates LZ)
-///           α-3  OffshoreSyncReceiver (LZ)      (decoded LZ V2 OApp message)
+///           α-2  CofferdamReceiver           (Ownable, simulates LZ)
+///           α-3  CofferdamReceiver (LZ)      (decoded LZ V2 OApp message)
 ///           v2   v2/self/NullifierRegistry      (Groth16 + Cofferdam TEE attester sig)
 ///
 ///         All three carry the same storage shape and emit the same event

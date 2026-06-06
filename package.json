@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "license": "MIT",
-  "description": "OffshoreSync on-chain contracts (ZKSync Era). Phase 0: Self.xyz verifier compile/deploy spike.",
+  "description": "Cofferdam on-chain contracts (ZKSync Era). Phase 0: Self.xyz verifier compile/deploy spike.",
   "scripts": {
     "compile": "hardhat compile",
     "compile:zk": "hardhat compile --network zkSyncSepolia",

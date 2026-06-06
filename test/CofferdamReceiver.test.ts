@@ -1,4 +1,4 @@
-// Unit tests for OffshoreSyncReceiver (α-2 identity registry).
+// Unit tests for CofferdamReceiver (α-2 identity registry).
 //
 // Run against a local anvil-zksync:
 //   yarn node:start          # in another terminal — leave running
@@ -23,7 +23,7 @@ import '@nomicfoundation/hardhat-chai-matchers';
 
 import { richWallets } from './helpers/wallets';
 
-describe('OffshoreSyncReceiver', () => {
+describe('CofferdamReceiver', () => {
   let deployerWallet: Wallet;
   let owner: Wallet;
   let other: Wallet;
@@ -41,7 +41,7 @@ describe('OffshoreSyncReceiver', () => {
     account = wallets[3];
 
     const deployer = new Deployer(hre, deployerWallet);
-    const artifact = await deployer.loadArtifact('OffshoreSyncReceiver');
+    const artifact = await deployer.loadArtifact('CofferdamReceiver');
     receiver = await deployer.deploy(artifact, [owner.address]);
   });
 
@@ -52,7 +52,7 @@ describe('OffshoreSyncReceiver', () => {
 
     it('reverts on zero-address owner', async () => {
       const deployer = new Deployer(hre, deployerWallet);
-      const artifact = await deployer.loadArtifact('OffshoreSyncReceiver');
+      const artifact = await deployer.loadArtifact('CofferdamReceiver');
       await expect(
         deployer.deploy(artifact, [ethers.ZeroAddress]),
       ).to.be.revertedWithCustomError(receiver, 'ZeroAddress');

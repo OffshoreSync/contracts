@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 
-/// @title OffshoreSyncEscrow
+/// @title CofferdamSpotEscrow
 /// @notice Native-ETH job-contract escrow with two posting paths:
 ///
 ///         1. **Self-funded** (α-2; solo operators / small businesses):
@@ -52,12 +52,12 @@ import {IIdentityRegistry} from "./IIdentityRegistry.sol";
 ///         checks-effects-interactions pattern + a single reentrancy guard.
 ///         We don't pull in OZ for this — codebase convention is inlined
 ///         minimal primitives.
-contract OffshoreSyncEscrow {
+contract CofferdamSpotEscrow {
     // ────────────────────────────────────────────────────────────────────────
     // Wiring
     // ────────────────────────────────────────────────────────────────────────
 
-    /// @notice Identity-binding source. α-2: `OffshoreSyncReceiver`. α-3: LZ
+    /// @notice Identity-binding source. α-2: `CofferdamReceiver`. α-3: LZ
     ///         variant of the same. v2: `v2/self/NullifierRegistry`. The
     ///         escrow only depends on the `IIdentityRegistry` interface, so
     ///         the era swap is a deploy-config change.

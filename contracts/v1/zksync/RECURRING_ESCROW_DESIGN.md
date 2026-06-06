@@ -1,11 +1,31 @@
-# Recurring-payment escrow — design doc
+# Escrow family — design doc (Spot / Shift / Rotation)
 
-> **Status:** design / pre-implementation. The current `OffshoreSyncEscrow.sol`
-> ships a fixed-duration, single-settlement model. The OffshoreSync Jobs API
-> already accepts contract shapes (rotational, permanent, fixed-term, day-rate)
-> that this escrow does not cover. This document specifies the gap, the real
-> maritime payment patterns we need to support, and the proposed second
-> contract (`OffshoreSyncRecurringEscrow.sol`).
+> **Status:** design / pre-implementation. The shipped escrow
+> (`CofferdamSpotEscrow`, formerly `OffshoreSyncEscrow.sol`) handles a
+> fixed-duration, single-settlement model only. Real employment — maritime
+> *and* onshore — also runs on cyclical settlement, which that contract
+> does not cover.
+>
+> **Rev-7.3 (2026-06-02) — three contracts, not two; abstract naming.**
+> An earlier draft proposed a 2-contract split (Spot +
+> `OffshoreSyncRecurringEscrow`). Per `ENTERPRISE_MODULE_PLAN.md` rev-7.3
+> (the enterprise module is a *Cofferdam* product serving onshore + offshore
+> verticals, not maritime-only), the recurring half splits again so a single
+> contract never carries both the **high-frequency-small (onshore)** and
+> **low-frequency-large (offshore)** reserve profiles. The family, all
+> `Cofferdam*`-branded:
+>
+> - **`CofferdamSpotEscrow`** (was `OffshoreSyncEscrow`) — single settlement.
+> - **`CofferdamShiftEscrow`** (new, onshore) — hourly/daily cadence, daily
+>   check-in/out, small rolling reserve; no leave-pay/allotment/severance.
+> - **`CofferdamRotationEscrow`** (was the planned `OffshoreSyncRecurringEscrow`)
+>   — hitch/monthly/per-rotation cadence, large multi-period reserve,
+>   leave-pay accrual, allotment split, severance/notice.
+>
+> The `.sol`/test/SDK-client/deployment rename + the new ShiftEscrow build
+> are tracked as the code migration in `ENTERPRISE_MODULE_PLAN.md` §14;
+> this doc is the spec. §3–§10 keep their maritime archetype detail and
+> pre-rename inline names; §4 maps every archetype to its contract.
 
 ## 1. The gap in one sentence
 
@@ -141,77 +161,187 @@ the market, there are five distinct **settlement archetypes**:
 
 ### 3.6 Coverage summary
 
-| Archetype | % of market | Current escrow fits? |
+Maritime archetypes (this doc's original enumeration) plus the onshore
+archetypes the Cofferdam module must also serve (factory hourly/daily, per
+`ENTERPRISE_MODULE_PLAN.md` rev-7.3), each mapped to its contract:
+
+| Archetype | Market | Contract |
 |---|---|---|
-| 3.1 Spot / voyage / project (lump) | ~15–20% | ✅ |
-| 3.2 Day-rate spot | ~5–10% | ⚠️ Coerced fit only |
-| 3.3 Rotation + monthly | ~35–45% | ❌ |
-| 3.4 Rotation + per-rotation lump | ~15–20% | ❌ |
-| 3.5 Fixed-term / permanent salaried | ~20–25% | ❌ |
-| **Total addressed by current escrow** | **~20–25%** | |
+| 3.1 Spot / voyage / project (lump) | ~15–20% maritime | `CofferdamSpotEscrow` |
+| 3.2 Day-rate spot | ~5–10% maritime | `CofferdamShiftEscrow` (Daily) |
+| 3.3 Rotation + monthly | ~35–45% maritime | `CofferdamRotationEscrow` (Monthly) |
+| 3.4 Rotation + per-rotation lump | ~15–20% maritime | `CofferdamRotationEscrow` (PerRotation) |
+| 3.5 Fixed-term / permanent salaried | ~20–25% maritime | `CofferdamRotationEscrow` (Monthly + `endsAt`) |
+| 3.7 Factory hourly (paid by hours, daily check-in/out) | onshore vertical | `CofferdamShiftEscrow` (Hourly) |
+| 3.8 Factory daily (paid by days, daily check-in/out, goes home) | onshore vertical | `CofferdamShiftEscrow` (Daily) |
 
-The current escrow leaves **~75% of the maritime market on the
-status-quo SWIFT / payroll-service rails**. Useful for shipping the
-α-2 PoC and for the spot-voyage sub-market, but materially
-under-serves the marketplace's own enumeration.
+The three-contract family addresses **all** enumerated archetypes, onshore
+and offshore. `CofferdamSpotEscrow` alone (the only contract shipped today)
+covers just archetype 3.1 — ~20–25% of the maritime market and none of the
+onshore shift cases — leaving the rest on the status-quo SWIFT /
+payroll-service rails until `CofferdamShiftEscrow` + `CofferdamRotationEscrow`
+ship.
 
-## 4. Proposed split: two contracts, two roles
+### 3.9 US labor reality + stablecoin-payment compliance
 
-Don't extend `OffshoreSyncEscrow.sol`. Keep it scoped to archetype 3.1
-(it's a clean fit) and add a sibling contract for archetypes 3.3–3.5.
+The onshore US cases (archetypes 3.7/3.8 + the biweekly/semimonthly salaried
+workers §3 added) bring a compliance surface the maritime cases mostly
+sidestep. US federal (FLSA) and most state wage-payment laws require wages to
+be paid in cash or a negotiable instrument **payable at par**, and several
+states also restrict the *method* of payment (no scrip; employee-choice
+rules). Settling wages directly in a volatile asset would not satisfy this.
+Three design choices keep the on-chain path inside the lines:
 
-```
-              ┌──────────────────────────────────────────┐
-              │   OffshoreSyncEscrow.sol  (existing)     │
-              │   Single-settlement, fixed-duration.     │
-              │   Lifecycle: Posted → Awarded → CheckedIn│
-              │              → CheckedOut → Settled.     │
-              │   Used by: temporary/contract,           │
-              │            temporary/voyage,             │
-              │            temporary/project,            │
-              │            temporary/single_assignment.  │
-              └──────────────────────────────────────────┘
+**1. USDC, redeemable at par.** Net pay settles in **USDC** — a fully
+reserved, USD-pegged regulated payment stablecoin — which the worker redeems
+1:1 ("at par") for USD via Circle Mint → bank, or spends through a chosen
+off-ramp (Valora / MiniPay / MoonPay). The worker never has to hold a
+fluctuating asset to be made whole. (Payment-stablecoin footing: US GENIUS
+Act + Circle's regulated issuance.)
 
-              ┌──────────────────────────────────────────┐
-              │   OffshoreSyncRecurringEscrow.sol (new)  │
-              │   Multi-period streaming with leave-pay  │
-              │   accrual.                               │
-              │   Lifecycle: Drafted → Funded → Awarded  │
-              │              → Active ↔ Paused → Closed. │
-              │   Settlement: settlePeriod() at every    │
-              │   cycle boundary; topUpReserve() on demand│
-              │   Used by: rotation/monthly,             │
-              │            rotation/per_rotation,        │
-              │            contract/monthly,             │
-              │            permanent/monthly,            │
-              │            temporary/day_rate.           │
-              └──────────────────────────────────────────┘
-```
+**2. Consent is mandatory — via the OffshoreSync T&C, as an opt-in to the
+Cofferdam SDK.** On-chain settlement (`settlementMethod: 'zk_contract'`) is
+**opt-in**: the worker chooses the Cofferdam SDK path. That opt-in is
+governed by the **OffshoreSync Terms & Conditions** — there is **no separate
+Cofferdam T&C** (deferred). Consenting to receive net pay in a USD-stablecoin
+is a **mandatory, non-negotiable precondition** of opting in: you cannot use
+the on-chain rail without it. Consent is therefore captured **once**, at T&C
+acceptance (versioned + identity-anchored), and is **not** re-collected per
+settlement. (This corrects the earlier "per-settlement consent record" sketch
+— consent is platform-level and mandatory, not per-payment.)
 
-Both contracts share the same `IIdentityRegistry` gate, the same
-arbiter (LLC Treasury Safe), and the same fee-router pattern (see
-`financial/REVENUE_MODEL.md` §3.5 — the router becomes
-`OffshoreSyncRecurringEscrowRouter` for the new contract). The SDK
-exposes them as two clients sharing a common base.
+**3. Net-amount-only.** The escrow only ever moves the **net** the employer's
+payroll engine already computed; withholding, tax, and benefits stay upstream
+(`ENTERPRISE_MODULE_PLAN.md` §8.1). The employer remains the payer of record;
+OffshoreSync/Cofferdam is the settlement rail, **not a party** to the
+employment or wage obligation — consistent with the OffshoreSync T&C §8.
+
+**Per-settlement USD-reference record (this is what *is* per-settlement).**
+Each `settlePeriod()` emits `PeriodSettled(contractId, periodIndex,
+netSettledUSDC, usdReferenceMicros, settledAt)`. `usdReferenceMicros` is the
+USD value of the USDC settled at that moment (6-dp, matching USDC; 1:1 for
+USDC, and the field future-proofs non-par or multi-asset settlement). It
+makes the on-chain compliance artifact explicit — *what* net wage, in USD
+terms, moved *when*, to *whom*, under *which* signed contract (`termsHash`).
+The worker and employer reconcile their own payslip/tax records against this
+event; Cofferdam neither computes nor files anything.
+
+**Still off-chain / out of scope here.** Jurisdiction method-of-payment edge
+cases (the few states with written-consent or specific-instrument rules) are
+handled by the OffshoreSync onboarding/compliance module gating *who may opt
+in*, not by the contract.
+
+**Legal infrastructure deferred to post-production.** This section records
+*design intent only*. The opt-in clause wording and the full legal
+infrastructure — including the standalone Cofferdam T&C — are deliberately
+sequenced **after** Cofferdam reaches production; **no OffshoreSync (or
+Cofferdam) terms files are being edited now** (user direction, 2026-06-03).
+
+## 4. Proposed split: three contracts (Spot / Shift / Rotation)
+
+Don't extend `CofferdamSpotEscrow` (the renamed `OffshoreSyncEscrow`).
+Keep it scoped to the single-settlement archetype (3.1) and add **two**
+sibling contracts — one for the **onshore shift** profile, one for the
+**offshore rotation** profile — so neither carries the other's weight:
+
+- **`CofferdamSpotEscrow`** (was `OffshoreSyncEscrow`) — single-settlement,
+  fixed-duration. Lifecycle `Posted → Awarded → CheckedIn → CheckedOut →
+  Settled`. Archetype 3.1 (temporary/contract, voyage, project,
+  single_assignment, trip).
+- **`CofferdamShiftEscrow`** (NEW, onshore) — high-frequency, thin rolling
+  reserve; the worker checks in/out each shift and goes home. No leave-pay,
+  allotment, or severance. Cadence `Hourly | Daily`; **batched** settlement
+  (gas-bounded, §8.7). Archetypes: factory-hourly (3.7), factory-daily
+  (3.8), onshore day-rate / surge labour (3.2).
+- **`CofferdamRotationEscrow`** (was `OffshoreSyncRecurringEscrow`) — the
+  **calendar-period** base: `settlePeriod()` per cycle + `topUpReserve()` on
+  demand. Its offshore origin adds a large multi-period reserve + leave-pay
+  accrual + allotment split + severance/notice; the worker checks in/out once
+  per hitch. Cadence `Weekly | Biweekly | SemiMonthly | Monthly | PerRotation
+  | Custom`. Archetypes: rotation/monthly (3.3), rotation/per_rotation (3.4 —
+  the 21-day hitch), fixed-term / permanent salaried (3.5), **plus US onshore
+  W-2 payroll** (weekly/biweekly/semimonthly) which reuses this base with the
+  offshore fields (leave-pay/allotment/severance) left unused and
+  `payClass = W2Net`. (1099 contractors use `payClass = Contractor1099Gross`
+  on the same cadences.)
+
+**Why Shift and Rotation are separate contracts, not one cadence enum.**
+The onshore shift worker and the offshore rotation seafarer have opposite
+reserve/settlement profiles; merging them bloats both:
+
+| Dimension | `CofferdamShiftEscrow` (onshore) | `CofferdamRotationEscrow` (offshore) |
+|---|---|---|
+| Settlement frequency | hourly / daily (high) | per-hitch / monthly (low) |
+| Per-settlement amount | small | large |
+| Reserve held | thin (≈1–2 days) | thick (≈1–2+ months / hitches) |
+| Leave-pay accrual | none | yes (`leavePayBps`) |
+| Allotment split (family) | no | yes |
+| Severance / notice | no | yes |
+| Settle gas strategy | **batched** (daily settles are death by gas) | per-period fine at monthly cadence |
+| Check-in/out | every shift (goes home) | once per hitch |
+
+One merged contract makes every onshore micro-settlement pay for storage
+slots and code paths (leave accrual, allotment, severance) it never uses,
+and saddles the offshore reserve logic with a high-frequency settle path it
+never wants. Two lean contracts keep each audit small.
+
+All three share the same `IIdentityRegistry` gate, the same arbiter (LLC
+Treasury Safe), the same witness / check-in primitive (§6 of
+`ENTERPRISE_MODULE_PLAN.md`), and the same fee-router pattern
+(`financial/REVENUE_MODEL.md` §3.5 — a `Cofferdam{Spot,Shift,Rotation}EscrowRouter`
+each). The SDK exposes three clients over a shared base; routing from a job
+archetype to the right client happens off-chain (§6).
 
 The Jobs API → contract routing happens **off-chain in the SDK**
 (SDK reads `vacancy.contractType + vacancy.paymentType` and picks
 the right client). The on-chain contracts don't know about Jobs
 API enums — they speak in their own minimal vocabulary.
 
-## 5. `OffshoreSyncRecurringEscrow.sol` — sketch
+## 5. Recurring-escrow sketch (`CofferdamShiftEscrow` + `CofferdamRotationEscrow`)
 
 Not a final API; this is the **shape** the design points at. Open
 questions enumerated in §8.
 
-```solidity
-contract OffshoreSyncRecurringEscrow {
+> **Two contracts from one sketch (rev-7.3).** The struct below is the
+> shared recurring base. **`CofferdamRotationEscrow`** (offshore) uses it in
+> full. **`CofferdamShiftEscrow`** (onshore) is the *reduced* subset: drop
+> `leavePayBps`, `accruedLeavePay`, the allotment split, and `severanceCap`;
+> restrict `Cadence` to `Hourly | Daily`; and replace the per-period
+> `settlePeriod()` with a gas-batched settle (§8.7). The identifier in the
+> sketch is the pre-rename `OffshoreSyncRecurringEscrow`.
 
+```solidity
+contract OffshoreSyncRecurringEscrow {   // → CofferdamRotationEscrow (+ reduced CofferdamShiftEscrow), rev-7.3
+
+    // Two settlement families: attendance-event (onshore shift, worker goes
+    // home) and calendar-period (US W-2 payroll + offshore rotation). The US
+    // private-sector frequencies (Weekly/Biweekly/SemiMonthly) settle per
+    // calendar period on the CofferdamRotationEscrow base with the offshore
+    // fields (leavePayBps, allotment, severance) left unused — see §4.
     enum Cadence {
-        Daily,        // archetype 3.2 (day-rate spot)
+        // ── Attendance-event (CofferdamShiftEscrow) ──
+        Hourly,       // archetype 3.7 (factory hourly, daily check-in/out)
+        Daily,        // archetypes 3.2, 3.8 (day-rate, factory daily)
+        // ── Calendar-period (CofferdamRotationEscrow base) ──
+        Weekly,       // US onshore — ~27% of US private payrolls
+        Biweekly,     // US onshore — ~43%, the dominant US private-sector frequency
+        SemiMonthly,  // US onshore — ~19%, twice/month on fixed days (e.g. 15th + last);
+                      //   calendar-anchored: settled by date, NOT a constant periodSeconds
         Monthly,      // archetypes 3.3, 3.5 (rotation+monthly, contract, permanent)
-        PerRotation,  // archetype 3.4 (per-rotation lump)
-        Custom        // future: arbitrary periodSeconds (e.g. bi-weekly)
+        // ── Offshore rotation ──
+        PerRotation,  // archetype 3.4 (per-rotation lump; 21-day hitch)
+        // ── Escape hatch ──
+        Custom        // arbitrary periodSeconds
+    }
+
+    // Worker classification — governs whether the settled amount is
+    // post-withholding (employee) or full gross (contractor). Cofferdam never
+    // computes the split; this flag only records which the upstream payroll
+    // produced, keeping settlement net-amount-only (ENTERPRISE_MODULE_PLAN.md
+    // §8.1) while the on-chain proof stays unambiguous about what was paid.
+    enum PayClass {
+        W2Net,               // employee — employer payroll already withheld; escrow settles NET
+        Contractor1099Gross  // 1099 contractor — full GROSS settled; worker self-remits taxes
     }
 
     enum Status {
@@ -235,7 +365,11 @@ contract OffshoreSyncRecurringEscrow {
 
         // Cadence + rate.
         Cadence  cadence;
-        uint64   periodSeconds;       // 86400 (Daily), ~2_592_000 (Monthly), workingRegime onDutyDays (PerRotation), arbitrary (Custom).
+        PayClass payClass;            // W-2 net vs 1099 gross (records upstream classification; not computed here)
+        uint64   periodSeconds;       // 604800 (Weekly), 1209600 (Biweekly), 86400 (Daily),
+                                      //   ~2_592_000 (Monthly), workingRegime onDutyDays (PerRotation),
+                                      //   arbitrary (Custom). SemiMonthly is calendar-anchored
+                                      //   (two fixed pay-days/month) — periodSeconds unused, settled by date.
         uint256  ratePerPeriod;       // wei (v1) or USDC (v2) per period.
 
         // Reserve model. The funder pre-loads N periods of reserve so
@@ -268,6 +402,7 @@ contract OffshoreSyncRecurringEscrow {
     function postRecurringIntent(
         bytes32 termsHash,
         Cadence cadence,
+        PayClass payClass,
         uint64  periodSeconds,
         uint256 ratePerPeriod,
         uint64  minReservePeriods,
@@ -290,6 +425,9 @@ contract OffshoreSyncRecurringEscrow {
     /// Anyone (worker, recruiter, keeper bot) can call. Pays out
     /// (elapsed_periods * ratePerPeriod) - totalSettledToWorker
     /// from reserveLocked, accrues leavePayBps on the settled amount.
+    /// Emits PeriodSettled(contractId, periodIndex, netSettledUSDC,
+    /// usdReferenceMicros, settledAt) — the per-settlement USD-reference
+    /// record for the worker's/employer's tax + audit trail (§3.9).
     function settlePeriod(uint256 contractId) external;
 
     /// Funder tops up reserve to keep the stream healthy. Indexers
@@ -375,6 +513,7 @@ import {
   OffshoreSyncEscrowClient,
   OffshoreSyncRecurringEscrowClient,
   Cadence,
+  PayClass,
 } from '@cofferdam/sdk'
 
 export function clientForVacancy(vacancy, signer) {
@@ -389,15 +528,23 @@ export function clientForVacancy(vacancy, signer) {
     return new OffshoreSyncEscrowClient({ signer, ... })
   }
 
-  // Archetypes 3.2–3.5 — recurring.
+  // Archetypes 3.2–3.5 + US onshore W-2 payroll — recurring.
   const cadence =
     compensation.paymentType === 'daily'        ? Cadence.Daily       :
+    compensation.paymentType === 'weekly'       ? Cadence.Weekly      :
+    compensation.paymentType === 'biweekly'     ? Cadence.Biweekly    :
+    compensation.paymentType === 'semimonthly'  ? Cadence.SemiMonthly :
     compensation.paymentType === 'monthly'      ? Cadence.Monthly     :
     compensation.paymentType === 'per_rotation' ? Cadence.PerRotation :
     /* paymentType === 'contract' && contractType !== 'temporary' */
     Cadence.Monthly  // fixed-term salaried — treat as monthly stream with endsAt set
 
-  return new OffshoreSyncRecurringEscrowClient({ signer, cadence, ... })
+  // W-2 employees settle net (employer withheld upstream); 1099 settle gross.
+  const payClass = compensation.workerClass === '1099'
+    ? PayClass.Contractor1099Gross
+    : PayClass.W2Net
+
+  return new OffshoreSyncRecurringEscrowClient({ signer, cadence, payClass, ... })
 }
 ```
 
@@ -599,6 +746,51 @@ accidentally cross-contaminate.
 
 ## 11. Change log
 
+- 2026-06-03 (rev-7.3b) — Stablecoin-payment compliance + consent model. New
+  §3.9 (US labor reality + stablecoin-payment compliance): net pay settles in
+  **USDC redeemable at par** (satisfies FLSA "payable at par"); **consent to
+  stablecoin payment is mandatory and obtained through the OffshoreSync Terms
+  & Conditions as an opt-in to the Cofferdam SDK** — on-chain settlement is
+  opt-in, but consenting to USDC is a non-negotiable precondition of it,
+  captured once at T&C acceptance (versioned, identity-anchored), **not**
+  per-settlement. A standalone **Cofferdam T&C is deferred**; the OffshoreSync
+  T&C is the sole consent vehicle for now. This corrects the earlier
+  "per-settlement consent record" idea. What *is* per-settlement: a
+  USD-reference record — `settlePeriod()` now documents a `PeriodSettled(
+  contractId, periodIndex, netSettledUSDC, usdReferenceMicros, settledAt)`
+  event as the tax/audit artifact. Net-amount-only + employer-is-payer-of-
+  record posture reaffirmed (`ENTERPRISE_MODULE_PLAN.md` §8.1; OffshoreSync
+  T&C §8 — "not a party" to compensation). Per user direction (2026-06-03),
+  the consent-clause wording + full legal infrastructure (incl. the standalone
+  Cofferdam T&C) are **deferred until post-production**; **no terms files are
+  edited now** — §3.9 records design intent only.
+- 2026-06-02 (rev-7.3a) — US calendar-period payroll cadences + worker
+  classification. Added `Weekly`, `Biweekly`, `SemiMonthly` to the `Cadence`
+  enum (biweekly is the dominant US private-sector frequency; previously only
+  reachable via `Custom`), grouped the enum into attendance-event vs
+  calendar-period families, and flagged that SemiMonthly is calendar-anchored
+  (two fixed pay-days/month — settled by date, not a constant `periodSeconds`).
+  Added a `PayClass` enum (`W2Net | Contractor1099Gross`) + a `payClass` field
+  on `RecurringContract` and a `payClass` param on `postRecurringIntent`,
+  recording the upstream W-2-net vs 1099-gross classification **without**
+  computing it (settlement stays net-amount-only, `ENTERPRISE_MODULE_PLAN.md`
+  §8.1). US onshore W-2 payroll settles on the `CofferdamRotationEscrow`
+  calendar-period base with the offshore fields (leave-pay/allotment/severance)
+  unused (§4). SDK `clientForVacancy` routing + example extended. (The §3.9
+  compliance section + per-settlement USD-reference record landed in rev-7.3b,
+  which also reframed worker consent as a mandatory OffshoreSync-T&C opt-in to
+  the Cofferdam SDK rather than a per-settlement record.)
+- 2026-06-02 (rev-7.3) — Split the recurring half in two and renamed the
+  family to `Cofferdam*`. The escrow is now three contracts —
+  `CofferdamSpotEscrow` (was `OffshoreSyncEscrow`), `CofferdamShiftEscrow`
+  (new, onshore hourly/daily), `CofferdamRotationEscrow` (was
+  `OffshoreSyncRecurringEscrow`, offshore hitch/monthly) — so one contract
+  never carries both the high-frequency-small and low-frequency-large
+  reserve profiles (§4). Added an `Hourly` cadence + onshore archetypes
+  3.7/3.8 (factory hourly/daily). Driven by `ENTERPRISE_MODULE_PLAN.md`
+  rev-7.3 (the enterprise module is a Cofferdam product serving onshore +
+  offshore, not maritime-only). The `.sol`/test/SDK/deployment rename + the
+  ShiftEscrow build are tracked there as the §14 code migration.
 - 2026-05-28 — Initial design draft. Five archetypes enumerated,
   contract sketch in §5, integration plan in §6, open questions
   in §8. Implementation deferred to β; not in the α-3 critical

@@ -1,12 +1,12 @@
-// α-2 — Deploy the v1 ZKSync Era contracts (OffshoreSyncReceiver + Escrow).
+// α-2 — Deploy the v1 ZKSync Era contracts (CofferdamReceiver + Escrow).
 //
 // Usage:
 //   yarn deploy:v1-zksync:local      # against anvil-zksync (in-memory node)
 //   yarn deploy:v1-zksync:sepolia    # against ZKSync Era Sepolia (needs funded key)
 //
 // What it does:
-//   1. Deploys OffshoreSyncReceiver, initial owner = deployer EOA.
-//   2. Deploys OffshoreSyncEscrow wired to that receiver; initial owner = deployer EOA.
+//   1. Deploys CofferdamReceiver, initial owner = deployer EOA.
+//   2. Deploys CofferdamSpotEscrow wired to that receiver; initial owner = deployer EOA.
 //   3. Writes both addresses (+ deployer + timestamp) to
 //        contracts/deployments/<network>.json
 //      so the SDK's LocalChainProvider, the smoke-test, and the consumer-app
@@ -56,21 +56,21 @@ export default async function deploy(hardhat: HardhatRuntimeEnvironment): Promis
     );
   }
 
-  // ── 1. OffshoreSyncReceiver ────────────────────────────────────────────────
-  const receiverArtifact = await deployer.loadArtifact('OffshoreSyncReceiver');
+  // ── 1. CofferdamReceiver ────────────────────────────────────────────────
+  const receiverArtifact = await deployer.loadArtifact('CofferdamReceiver');
   const receiver = await deployer.deploy(receiverArtifact, [wallet.address]);
   const receiverAddress = await receiver.getAddress();
   const receiverTx = receiver.deploymentTransaction()?.hash;
-  console.log('[deploy-v1-zksync] ✅ OffshoreSyncReceiver');
+  console.log('[deploy-v1-zksync] ✅ CofferdamReceiver');
   console.log('[deploy-v1-zksync]    address:', receiverAddress);
   console.log('[deploy-v1-zksync]    tx:     ', receiverTx);
 
-  // ── 2. OffshoreSyncEscrow (wired to receiver) ──────────────────────────────
-  const escrowArtifact = await deployer.loadArtifact('OffshoreSyncEscrow');
+  // ── 2. CofferdamSpotEscrow (wired to receiver) ──────────────────────────────
+  const escrowArtifact = await deployer.loadArtifact('CofferdamSpotEscrow');
   const escrow = await deployer.deploy(escrowArtifact, [receiverAddress, wallet.address]);
   const escrowAddress = await escrow.getAddress();
   const escrowTx = escrow.deploymentTransaction()?.hash;
-  console.log('[deploy-v1-zksync] ✅ OffshoreSyncEscrow');
+  console.log('[deploy-v1-zksync] ✅ CofferdamSpotEscrow');
   console.log('[deploy-v1-zksync]    address:', escrowAddress);
   console.log('[deploy-v1-zksync]    tx:     ', escrowTx);
   console.log('[deploy-v1-zksync]    identity:', receiverAddress);
@@ -81,14 +81,14 @@ export default async function deploy(hardhat: HardhatRuntimeEnvironment): Promis
   const outPath = path.join(deploymentsDir, `${hardhat.network.name}.json`);
   const prev = fs.existsSync(outPath) ? JSON.parse(fs.readFileSync(outPath, 'utf8')) : {};
   const deployedAt = new Date().toISOString();
-  prev.OffshoreSyncReceiver = {
+  prev.CofferdamReceiver = {
     address: receiverAddress,
     txHash: receiverTx,
     deployedAt,
     deployer: wallet.address,
     owner: wallet.address,
   };
-  prev.OffshoreSyncEscrow = {
+  prev.CofferdamSpotEscrow = {
     address: escrowAddress,
     txHash: escrowTx,
     deployedAt,

@@ -1,4 +1,4 @@
-// Unit tests for OffshoreSyncEscrow (α-2 native-ETH escrow).
+// Unit tests for CofferdamSpotEscrow (α-2 native-ETH escrow).
 //
 // Run against a local anvil-zksync:
 //   yarn node:start          # in another terminal — leave running
@@ -29,7 +29,7 @@ import '@nomicfoundation/hardhat-chai-matchers';
 
 import { richWallets } from './helpers/wallets';
 
-describe('OffshoreSyncEscrow', () => {
+describe('CofferdamSpotEscrow', () => {
   let deployerWallet: Wallet;
   let owner: Wallet;       // = arbiter for disputes
   let recruiter: Wallet;   // HR
@@ -61,11 +61,11 @@ describe('OffshoreSyncEscrow', () => {
     const deployer = new Deployer(hre, deployerWallet);
 
     // Identity registry, owner = `owner` so it can bind on demand in tests.
-    const receiverArtifact = await deployer.loadArtifact('OffshoreSyncReceiver');
+    const receiverArtifact = await deployer.loadArtifact('CofferdamReceiver');
     receiver = await deployer.deploy(receiverArtifact, [owner.address]);
 
     // Escrow points at the receiver; arbiter = `owner`.
-    const escrowArtifact = await deployer.loadArtifact('OffshoreSyncEscrow');
+    const escrowArtifact = await deployer.loadArtifact('CofferdamSpotEscrow');
     escrow = await deployer.deploy(escrowArtifact, [
       await receiver.getAddress(),
       owner.address,
@@ -96,7 +96,7 @@ describe('OffshoreSyncEscrow', () => {
 
     it('reverts on zero identity', async () => {
       const deployer = new Deployer(hre, deployerWallet);
-      const artifact = await deployer.loadArtifact('OffshoreSyncEscrow');
+      const artifact = await deployer.loadArtifact('CofferdamSpotEscrow');
       await expect(
         deployer.deploy(artifact, [ethers.ZeroAddress, owner.address]),
       ).to.be.revertedWithCustomError(escrow, 'ZeroAddress');
@@ -104,7 +104,7 @@ describe('OffshoreSyncEscrow', () => {
 
     it('reverts on zero owner', async () => {
       const deployer = new Deployer(hre, deployerWallet);
-      const artifact = await deployer.loadArtifact('OffshoreSyncEscrow');
+      const artifact = await deployer.loadArtifact('CofferdamSpotEscrow');
       await expect(
         deployer.deploy(artifact, [await receiver.getAddress(), ethers.ZeroAddress]),
       ).to.be.revertedWithCustomError(escrow, 'ZeroAddress');
