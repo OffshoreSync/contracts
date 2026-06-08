@@ -45,6 +45,11 @@ const config: HardhatUserConfig = {
     // the curl command in README.md.
     settings: {
       compilerPath: './bin/zksolc',
+      // Required by the native AA contracts (CofferdamSmartAccount / Factory):
+      // they invoke system contracts (NonceHolder, ContractDeployer) through
+      // SystemContractsCaller with the system-call flag, which zksolc only
+      // permits when EraVM extensions are enabled. (Formerly named `isSystem`.)
+      enableEraVMExtensions: true,
       // Explicitly select the Yul codegen (zksolc's current default).
       // Setting this silences a deprecation warning and future-proofs us:
       // zksolc has signaled that omitting `codegen` will become a hard
