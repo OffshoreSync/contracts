@@ -22,6 +22,10 @@ const config: HardhatUserConfig = {
   solidity: {
     version: '0.8.28',
     settings: {
+      // OpenZeppelin's Bytes.sol (pulled in by WebAuthn.sol → Bytes.slice) emits
+      // the `mcopy` opcode, which requires the Cancun EVM target. zksolc 1.5.16
+      // lowers it correctly for EraVM.
+      evmVersion: 'cancun',
       optimizer: {
         enabled: true,
         runs: 200,

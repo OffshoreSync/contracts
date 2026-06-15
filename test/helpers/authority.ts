@@ -78,6 +78,64 @@ export function signP256(priv: Uint8Array, digest: string): string {
   return '0x' + r + s;
 }
 
+// ── WebAuthn passkey (real platform authenticator shape) ────────────────────
+
+/** base64url (no padding) of raw bytes — matches the WebAuthn challenge encoding. */
+export function base64url(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return Buffer.from(bin, 'binary')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/**
+ * Build + sign a WebAuthn assertion over `digest`, returning the
+ * abi.encode(WebAuthn.WebAuthnAuth) blob that `WebAuthnPasskeyAuthority`
+ * expects as its `signature`. Mirrors what a real authenticator emits:
+ *   - clientDataJSON = {"type":"webauthn.get","challenge":<b64url(digest)>,...}
+ *   - authenticatorData = rpIdHash(32) || flags(1) || signCount(4)
+ *   - signature over sha256(authenticatorData || sha256(clientDataJSON))
+ *
+ * `flags` defaults to UP|UV|BE|BS (0x1d) — a synced platform passkey that did
+ * biometric user-verification.
+ */
+export function signWebAuthn(priv: Uint8Array, digest: string, flags = 0x1d): string {
+  const challenge = base64url(ethers.getBytes(digest));
+  // Field order chosen so "type" precedes "challenge"; both indices are reported
+  // to the verifier. Extra fields after challenge are allowed by the spec.
+  const clientDataJSON =
+    `{"type":"webauthn.get","challenge":"${challenge}","origin":"https://cofferdam.xyz","crossOrigin":false}`;
+  const typeIndex = clientDataJSON.indexOf('"type":');
+  const challengeIndex = clientDataJSON.indexOf('"challenge":');
+
+  const rpIdHash = ethers.getBytes(ethers.sha256(ethers.toUtf8Bytes('cofferdam.xyz')));
+  const authenticatorData = new Uint8Array(37);
+  authenticatorData.set(rpIdHash, 0);
+  authenticatorData[32] = flags;
+  // signCount = 0 (bytes 33..36 already zero)
+
+  const clientDataHash = ethers.getBytes(ethers.sha256(ethers.toUtf8Bytes(clientDataJSON)));
+  const base = new Uint8Array(authenticatorData.length + clientDataHash.length);
+  base.set(authenticatorData, 0);
+  base.set(clientDataHash, authenticatorData.length);
+  const messageHash = ethers.getBytes(ethers.sha256(base));
+
+  const sig = p256.sign(messageHash, priv);
+  const n = p256.CURVE.n;
+  let sVal = sig.s;
+  if (sVal > n / 2n) sVal = n - sVal;
+  const r = '0x' + sig.r.toString(16).padStart(64, '0');
+  const s = '0x' + sVal.toString(16).padStart(64, '0');
+
+  return abi.encode(
+    ['bytes32', 'bytes32', 'uint256', 'uint256', 'bytes', 'string'],
+    [r, s, challengeIndex, typeIndex, ethers.hexlify(authenticatorData), clientDataJSON],
+  );
+}
+
 // ── Session key (legacy bridge) ─────────────────────────────────────────────
 
 export function sessionConfig(signer: string): string {

@@ -4,12 +4,17 @@
 // by every CofferdamAccount; per-user accounts are deployed separately by the
 // app/factory and reference these module addresses):
 //
-//   1. PasskeyAuthority          — High tier, P-256 (Secure Enclave/StrongBox).
-//   2. SessionKeyAuthority(Untrusted) — LowUntrusted legacy bridge: the module
+//   1. PasskeyAuthority          — High tier, RAW P-256 over the digest (the
+//      α-2 software/Secure-Enclave key path).
+//   2. WebAuthnPasskeyAuthority  — High tier, a REAL WebAuthn assertion
+//      (react-native-passkeys / navigator.credentials). Deployed with
+//      requireUserVerification=true (biometric-gated). This is the module the
+//      production mobile app bootstraps its account on.
+//   3. SessionKeyAuthority(Untrusted) — LowUntrusted legacy bridge: the module
 //      a consumer on local-password / Google-Apple OAuth registers a server
 //      session-signer against, so users can transact today and migrate to a
 //      passkey via CofferdamAccount.enrollFirstPasskey (the one-way ratchet).
-//   3. SessionKeyAuthority(Managed)   — LowManaged bridge for enterprise Polis
+//   4. SessionKeyAuthority(Managed)   — LowManaged bridge for enterprise Polis
 //      SSO (NOT ratchet-locked; OR-semantics with a later passkey).
 //
 // Optionally (SAMPLE_ACCOUNT=1) deploys one legacy-first CofferdamAccount
@@ -69,6 +74,17 @@ export default async function deploy(hardhat: HardhatRuntimeEnvironment): Promis
   const passkeyModAddr = await passkeyMod.getAddress();
   console.log('[deploy-auth-framework] ✅ PasskeyAuthority:', passkeyModAddr);
 
+  // UV is a compile-time `constant true` on this module (a High-tier financial
+  // authority is always biometric-gated). It must be a constant — not an
+  // immutable/storage value — so `isValidSignature` is safe to call inside the
+  // ZKSync AA validation step. Hence no constructor args.
+  const webauthnMod = await deployer.deploy(
+    await deployer.loadArtifact('WebAuthnPasskeyAuthority'),
+    [],
+  );
+  const webauthnModAddr = await webauthnMod.getAddress();
+  console.log('[deploy-auth-framework] ✅ WebAuthnPasskeyAuthority (requireUV):', webauthnModAddr);
+
   const untrustedMod = await deployer.deploy(
     await deployer.loadArtifact('SessionKeyAuthority'),
     [Tier.LowUntrusted],
@@ -99,6 +115,15 @@ export default async function deploy(hardhat: HardhatRuntimeEnvironment): Promis
     deployer: wallet.address,
     tier: 'High',
     kind: 'passkey',
+  };
+  registry['WebAuthnPasskeyAuthority'] = {
+    address: webauthnModAddr,
+    txHash: webauthnMod.deploymentTransaction()?.hash,
+    deployedAt: now,
+    deployer: wallet.address,
+    tier: 'High',
+    kind: 'passkey',
+    requireUserVerification: true,
   };
   registry['SessionKeyAuthority_LowUntrusted'] = {
     address: untrustedModAddr,
